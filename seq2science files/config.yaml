@@ -1,21 +1,21 @@
 # tab-separated file of the samples
 #samples: samples.tsv
-samples: samples_mouse.tsv
+samples: samples.tsv
 
 # pipeline file locations
 #result_dir: ./results_gene_names # where to store results
-result_dir: ./results_mouse # where to store results
+result_dir: ./scRNAseq # where to store results
 
 #genome_dir: ./genomes  # where to look for or download the genomes
 
 #genome_dir: /ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/genomepy_genomes
-genome_dir: /ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/genomes_old
+genome_dir: ./genomes
 fastq_dir: ./fastq # where to look for fastqs
 # contact info for multiqc report and trackhub
 email: jsmits@science.ru.nl
 
-fqext1: R1_001
-fqext2: R2_001
+fqext1: R1
+fqext2: R2
 
 # how to handle replicates
 technical_replicates: merge

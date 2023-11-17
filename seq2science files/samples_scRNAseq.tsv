@@ -1,6 +1,8 @@
 # for help with filling out the samples.tsv:					
 # https://vanheeringen-lab.github.io/seq2science/content/workflows/scrna_seq.html#filling-out-the-samples-tsv					
-# also make sure that you use tab as a delimiter					
+# also make sure that you use tab as a delimiter
+#change for GEO GSM numbers when available
+					
 sample	assembly	descriptive_name	cell_type	timepoint	batch	replica	medium
 batch1_d0_1523_Z04_S7	GRCh38.p13	B2HT_d0_1	B2HT	d0	1	1	cnt30
 batch1_d10i_1525_Z02_S5	GRCh38.p13	B2HT_d11_1	B2HT	d11	1	1	cnt30
