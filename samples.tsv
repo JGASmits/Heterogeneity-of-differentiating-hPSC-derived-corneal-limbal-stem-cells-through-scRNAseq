@@ -1,0 +1,36 @@
+# for help with filling out the samples.tsv:					
+# https://vanheeringen-lab.github.io/seq2science/content/workflows/scrna_seq.html#filling-out-the-samples-tsv					
+# also make sure that you use tab as a delimiter					
+sample	assembly	descriptive_name	cell_type	timepoint	batch	replica	medium
+batch1_d0_1523_Z04_S7	GRCh38.p13	B2HT_d0_1	B2HT	d0	1	1	cnt30
+batch1_d10i_1525_Z02_S5	GRCh38.p13	B2HT_d11_1	B2HT	d11	1	1	cnt30
+batch1_d24_1522_Z03_S6	GRCh38.p13	B2HT_d24_1	B2HT	d24	1	1	cnt30
+ext_batch2_d24_003bC_r2_Z45_S16	GRCh38.p13	003bC_d24_1	003bC	d24	2	2	cnt30
+ext_batch2_d24_003bC_r1_Z34_S12	GRCh38.p13	003bC_d24_2	003bC	d24	2	2	cnt30
+ext_batch2_d24_001bB2HT_r2_Z44_S10	GRCh38.p13	B2HT_d24_2	B2HT	d24	2	2	cnt30
+ext_batch2_d24_001bB2HT_r1_Z33_S1	GRCh38.p13	B2HT_d24_3	B2HT	d24	2	2	cnt30
+ext_batch2_d11_003bC_r2_Z43_S9	GRCh38.p13	003bC_d11_1	003bC	d11	2	2	cnt30
+ext_batch2_d11_003bC_r1_Z32_S11	GRCh38.p13	003bC_d11_2	003bC	d11	2	2	cnt30
+ext_batch2_d11_001bB2HT_r1_Z31_S21	GRCh38.p13	B2HT_d11_2	B2HT	d11	2	2	cnt30
+ext_batch2_d0p28_003bC_r2_Z39_S8	GRCh38.p13	003bC_d0p28_1	003bC	d0	2	2	e8flex
+ext_batch2_d0p28_003bC_r1_Z28_S3	GRCh38.p13	003bC_d0p28_2	003bC	d0	2	2	e8flex
+ext_batch2_d0p25_001bB2HT_r1_Z25_S5	GRCh38.p13	B2HT_d0p25	B2HT	d0	2	2	e8flex
+ext_batch2_d0p23_003bC_r1_Z37_S22	GRCh38.p13	003bC_d0p23	003bC	d0	2	2	e8flex
+ext_batch2_d0p18_001bB2HT_r2_Z38_S17	GRCh38.p13	B2HT_d0p18_1	B2HT	d0	2	2	e8flex
+ext_batch2_d0p18_001bB2HT_r1_Z27_S14	GRCh38.p13	B2HT_d0p18_2	B2HT	d0	2	2	e8flex
+ext_batch3_d24_ESCs_r3_1688_Z22_S18	GRCh38.p13	ESC_d24_3-1	ESC	d24	3	1	cnt30
+ext_batch3_d24_ESCs_r2_1661_Z21_S17	GRCh38.p13	ESC_d24_3-2	ESC	d24	3	1	cnt30
+ext_batch3_d24_ESCs_r1_1656_Z20_S16	GRCh38.p13	ESC_d24_3-3	ESC	d24	3	1	cnt30
+ext_batch3_d24_003bC_r2_1657_Z19_S15	GRCh38.p13	003bC_d24_3-1	003bC	d24	3	1	cnt30
+ext_batch3_d24_003bC_r1_1655_Z18_S14	GRCh38.p13	003bC_d24_3-2	003bC	d24	3	1	cnt30
+ext_batch3_d10_ESCs_r3_1653_Z17_S13	GRCh38.p13	ESC_d10_3-1	ESC	d11	3	1	cnt30
+ext_batch3_d10_ESCs_r2_1687_Z16_S12	GRCh38.p13	ESC_d10_3-2	ESC	d11	3	1	cnt30
+ext_batch3_d10_ESCs_r1_1689_Z15_S11	GRCh38.p13	ESC_d10_3-3	ESC	d11	3	1	cnt30
+ext_batch3_d10_003bC_r2_1662_Z14_S10	GRCh38.p13	003bC_d10_3-1	003bC	d11	3	1	cnt30
+ext_batch3_d10_003bC_r1_1660_Z13_S9	GRCh38.p13	003bC_d10_3-2	003bC	d11	3	1	cnt30
+ext_batch3_d0_ESCs_r3_1658_Z10_S6	GRCh38.p13	ESC_d0_3-1	ESC	d0	3	1	e8flex
+ext_batch3_d0_ESCs_r2_1659_Z09_S5	GRCh38.p13	ESC_d0_3-2	ESC	d0	3	1	e8flex
+ext_batch3_d0_ESCs_r1_1654_Z08_S4	GRCh38.p13	ESC_d0_3-3	ESC	d0	3	1	e8flex
+ext_batch3_d0_003bC_r2_1691_Z12_S8	GRCh38.p13	003bC_d0_3-1	003bC	d0	3	1	e8flex
+ext_batch3_d0_003bC_r1_1690_Z11_S7	GRCh38.p13	003bC_d0_3-2	003bC	d0	3	1	e8flex
+

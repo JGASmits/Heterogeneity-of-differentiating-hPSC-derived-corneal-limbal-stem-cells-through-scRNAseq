@@ -1,0 +1,15 @@
+# for help with filling out the samples.tsv:					
+# https://vanheeringen-lab.github.io/seq2science/content/workflows/rna_seq.html#filling-out-the-samples-tsv					
+# also make sure that you use tab as a delimiter					
+sample	assembly	cell_line	replica	type	descriptive_name
+43143_0817_unselect_A65	GRCh38.p13	ESC	bulk_2	all	ESC_bulk_unselected_rep2
+43140_0817_select_rep1_A62	GRCh38.p13	ESC	iLSC	iLSC	ESC_bulk_iLSCs_rep1
+43142_0817_select_rep2_A64	GRCh38.p13	ESC	iLSC	iLSC	ESC_bulk_iLSCs_rep2
+43144_B2HT_unselect_A67	GRCh38.p13	B2HT	all	all	B2HT_bulk_all_rep2
+43165_Exp167_Jos_Jo_RNA_101_B2HT_unselect_A28	GRCh38.p13	B2HT	all	all	B2HT_bulk_all_rep2_2
+43141_B2HT_select_rep1_A63	GRCh38.p13	B2HT	iLSC	iLSC	B2HT_bulk_iLSCs_rep2
+43166_Exp167_Jos_Jo_RNA_102_B2HT_select_A29	GRCh38.p13	B2HT	iLSC	iLSC	B2HT_bulk_iLSCs_rep1
+PRIM_RNA_1	GRCh38.p13	adult	LSCs	LSC	LSC_RNA_1
+PRIM_RNA_2	GRCh38.p13	adult	LSCs	LSC	LSC_RNA_2
+GSM4728059	GRCh38.p13	adult	LSCs	LSC	LSC_ouyang_1
+GSM4728060	GRCh38.p13	adult	LSCs	LSC	LSC_ouyang_2

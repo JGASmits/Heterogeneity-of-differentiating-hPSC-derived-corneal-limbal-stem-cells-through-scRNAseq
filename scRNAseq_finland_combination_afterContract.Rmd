@@ -1,0 +1,3571 @@
+---
+title: "SORT-seq dataset with velocity preparations"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+#make sure to run:
+#export LD_LIBRARY_PATH=/vol/mbconda/jsmits/scrnaseq_23_exp/lib:'$LD_LIBRARY_PATH' 
+#before starting Rstudio
+
+## *Setting Parameters:* 
+Make sure all the metadata is available in the smples.tsv files from s2s, those columns will be loaded into the cellseq object
+
+Run this in a conda environment based on the yaml file:
+/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/markdown_notebooks/conda_envs/kb_scrna_R4.1_seurat3_monocle.yaml
+
+After this run the first time to install R packages:
+```{r}
+#run first time (no good anaconda packages, sadly):
+#install.packages('AnanseSeurat')
+#install.packages('SeuratWrappers')
+
+```
+
+Load libraries:
+```{r setup}
+library('enrichR')
+require("devtools")
+library("remotes")
+library('ggplot2')
+library('plyr')
+library('dplyr')
+library('tidyr')
+library('mvoutlier')
+library('limma')
+library('knitr')
+library('SingleCellExperiment')
+library("scater")
+library("Seurat")
+library("scran")
+library("RColorBrewer")
+library("plot3D")
+library("stringr")
+#library("SAVER")
+library("parallel")
+library('progeny')
+library("ComplexHeatmap")
+library("org.Hs.eg.db")
+library("clusterProfiler")
+library("ggpubr")
+library("circlize")
+library("cowplot")
+library('clustree')
+library('tidyverse')
+library("readxl")
+library("zoo")
+library("tidyverse")
+library('data.table')
+library('decoupleR')
+library('monocle')
+#library('SeuratWrappers')
+#library('SeuratDisk')
+library('future')
+library('ggplotify')
+library('ggtree')
+library('org.Hs.eg.db')
+library('OmnipathR')
+library("singleCellTK")
+library('grid')
+library('gridExtra')
+library("ggplotify")
+library("ggtree")
+library('scales')
+library('AnanseSeurat')
+library('SingleR')
+library('celldex')
+## Location of scripts ##
+source("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/tools/scripts/qc_ercc_384plot.R")
+source("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/tools/scripts/qc_umis_384plot.R")
+source(
+  "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/tools/scripts/read_kb_dataset_s2s.R"
+)
+source(
+  "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/markdown_notebooks/R_functions/scRNAseq_GOenrichment_plot_counts_JS.R"
+)
+
+set.seed(101)
+workdir <-
+  "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/analysis_diff_2023/"
+dateoftoday <- gsub("-", "", as.character(Sys.Date()))
+dateoftoday <- '20230125'
+resultsdir <- paste0(workdir, dateoftoday)
+system(paste("mkdir -p ", resultsdir))
+```
+
+
+```{r}
+## Parameters for processing dataset and metadata ##
+barcode_file = '/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/genomes/spike_in/barcode_384.tab'
+barcode_file_2 = "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/barcode_2_well.tab"
+MT_genes_file = '/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/genomes/spike_in/MT_genes.txt'
+s2s_results = "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/results_gene_names"
+s2s_sample_file = "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/samples.tsv"
+plate_index_files_loc <-
+  '/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/Index_sort_data/'
+
+#read s2s sample file:
+sample_info <-
+  read.table(
+    s2s_sample_file,
+    header = TRUE,
+    sep = '\t',
+    comment.char = "#"
+  )
+
+## setting working direcotry and figure directory ##
+dateoftoday <- gsub("-", "", as.character(Sys.Date()))
+dateoftoday <- '20230125'
+resultsdir <- paste0(workdir, dateoftoday)
+system(paste("mkdir -p ", resultsdir))
+knitr::opts_knit$set(root.dir = normalizePath(resultsdir))
+knitr::opts_knit$set(root.dir = normalizePath(workdir))
+```
+
+### Creating the SingleCellExperiment object & plate QC
+
+We will load the kalisto bus files, the seq2science sample file for adding meta data and finally the plate-barcode info to do three things;
+1. vizualice the counts per well on the 384 well plates
+2. generate a single cell object containing all the reads.
+3. remove (not needed) samples from the sce object
+```{r loading dataset, echo = FALSE, warning = FALSE}
+sce_file <- paste0(workdir, 'sce_unfiltered.RDS')
+
+if (file.exists(sce_file)) {
+  print('sce object file exists, loading and using it')
+  sce <- readRDS(sce_file)
+} else {
+  print('no sce object file found, generating one')
+  ## Splice seperated dataset:
+  spliced.data.df = read_kb_counts(paste(s2s_results, "/kallistobus/", sep = ""),
+                                   "spliced",
+                                   barcode_file = barcode_file)
+  unspliced.data.df = read_kb_counts(paste(s2s_results, "/kallistobus/", sep = ""),
+                                     "unspliced",
+                                     barcode_file = barcode_file)
+  #calculate spliced/unspliced percentage
+  print(paste0('percentage unspliced reads = ', (sum(
+    unspliced.data.df
+  ) / (
+    sum(spliced.data.df) + sum(unspliced.data.df)
+  )) * 100))
+  all_cells <-
+    intersect(colnames(spliced.data.df), colnames(unspliced.data.df))
+  unspliced.data.df <- unspliced.data.df[, all_cells]
+  spliced.data.df <- spliced.data.df[, all_cells]
+  
+  #since velocity doesnt work, lets merge the spliced and unspliced read
+  #all.data.df <- spliced.data.df + unspliced.data.df
+  data.df <- spliced.data.df
+  
+  print('adding metadatea from the seq2science sample file')
+  ##Lets load the metadate from seq2science and add it to the single cell experiment
+  ## Setting up the phenotable ##
+  phenodata <- data.frame(row.names = colnames(data.df))
+  phenodata$names <- row.names(phenodata)
+  
+  #add well ID as metadata, get the well info from the last _* regex from each column name
+  well_id <- function(x) {
+    x <- str_split(x, '_')
+    n_sub_strings <- length(x[[1]])
+    x <- x[[1]][n_sub_strings]
+  }
+  phenodata$well <- sapply(phenodata$names, function(x)
+    well_id(x))
+  #generate the original sample name, by removing the well info, merge with the s2s metadata
+  phenodata$name_nowell <-
+    mapply(function(x, y)
+      gsub(y, "", x),
+      phenodata$names,
+      paste('_', phenodata$well, sep = ""))
+  phenodata$sample <-
+    gsub("GRCh38.p13ERCCreporter_", "", phenodata$name_nowell)
+  phenodata$barcode_name <-
+    paste(phenodata$name_nowell, phenodata$well, sep = "")
+  phenodata <-
+    merge(phenodata, sample_info, by.x = 'sample', by.y = 'sample')
+  # Only take the entries that are matchable with the counttable entries:
+  
+  phenodata[is.na(phenodata)] <- 0
+  pheno_matched <-
+    phenodata[phenodata$names %in% colnames(data.df), ]
+  pheno_ordered <-
+    pheno_matched[match(colnames(data.df), pheno_matched$names), ]
+  identical(pheno_ordered$names, colnames(data.df))
+  #write.csv(phenodata, paste0(resultsdir,"/phenodata_kbordered.csv"))
+  # Matching phenodata with the dataset ordering
+  pheno_ordered <-
+    pheno_matched[match(colnames(data.df), pheno_matched$names), ]
+  
+  #do a plate based vizualization
+  # Make a list of cell-names compatable with the excel file: plate#_A1, plate#_A2 etc.
+  plate_order <-
+    read.table(barcode_file_2,
+               sep = "\t",
+               col.names = c("well", "barcode"))
+  # Make a vector with all plate numbers
+  platenrs <- unique(phenodata$name_nowell)
+  pdf(paste0(resultsdir, "/1.QC_per_Plate.pdf"), paper = "USr")
+  # settings for the plate diagnostics pdf
+  par(
+    mfrow = c(2, 2),
+    mar = c(5, 4, 4, 2) + 0.1,
+    cex.main = 1
+  )
+  # Iterate over all plates, order cells in the order of visualization
+  for (plate in platenrs) {
+    # use the order of cells from te barcode file (this is A1, A2, A3, etc to P24)
+    primer_order <- paste(plate, plate_order$well, sep = "")
+    # if wells are missing on the plate, these need to be added and given a value of 0
+    missing_wells <-
+      primer_order[!primer_order %in% colnames(spliced.data.df)]
+    cols_to_add <-
+      data.frame(matrix(
+        ncol = length(missing_wells),
+        nrow = length(rownames(spliced.data.df))
+      ))
+    colnames(cols_to_add) <- missing_wells
+    cols_to_add[is.na(cols_to_add)] <- 0
+    diag_plate <-
+      cbind(spliced.data.df[, grep(plate, colnames(spliced.data.df))], cols_to_add)
+    # phenodata contains same cellid entry + rowname as used in dataset
+    cells_order <-
+      colnames(diag_plate[, match(primer_order, colnames(diag_plate))])
+    
+    # match dataset cells order with wells in the visualization
+    tmp <- as.matrix(diag_plate[, cells_order])
+    QC_umis_384plot(tmp, paste(plate, "UMI_QC", sep = "_"))
+    QC_ERCC_384plot(tmp[grep("^ERCC", rownames(diag_plate)), ], paste(plate, "ERCC_QC", sep = "_"))
+    rm(tmp)
+  }
+  dev.off()
+  count_matrix <- as.matrix(data.df)
+  sce <-
+    SingleCellExperiment(
+      assays = list(counts = count_matrix),
+      colData = pheno_ordered,
+      rowData = rownames(count_matrix)
+    )
+  MT_genes <- read.table(MT_genes_file)[, 1]
+  # Adding spike-in information:
+  is.spike <- grepl("^ERCC", rownames(sce))
+  sce <- splitAltExps(sce, ifelse(is.spike, "ERCC", "gene"))
+  is.spike <- rownames(sce) %in% MT_genes
+  sce <- splitAltExps(sce, ifelse(is.spike, "MT", "gene"))
+  # Calculate the quality metrics:
+  sce <- addPerCellQC(sce)
+  sce <-
+    runCellQC(
+      sce,
+      #sample = "descriptive_name",#add sample info to run QC per sample!
+      algorithms = c("QCMetrics", "scDblFinder", "decontX"),
+      #collectionName = c("altexps_MT_percent","altexps_ERCC_percent"),
+      geneSetListLocation = "rownames"
+    )
+  
+  #filster sce on samples
+  table(sce$timepoint)
+  sce <-
+    sce[, !(
+      sce$timepoint == 'mixABCG2' |
+        sce$timepoint == 'purABCG2' | sce$timepoint == 'adult_LSC'
+    )]
+  saveRDS(sce, file = sce_file)
+  
+}
+```
+#filter and QC the sce
+```{r}
+sce_file <- paste0(workdir, 'sce.RDS')
+
+if (file.exists(sce_file)) {
+  print('filtered sce object file exists, loading and using it')
+  sce_qc <- readRDS(sce_file)
+} else{
+  print('filtering sce object')
+  nmads = 1.5
+  #sce <- na.omit(sce)
+  libsize.drop <-
+    isOutlier(
+      as.numeric(sce$sum),
+      nmads = nmads,
+      type = "both",
+      log = TRUE
+    )
+  feature.drop <-
+    isOutlier(
+      as.numeric(sce$detected),
+      nmads = nmads,
+      type = "both",
+      log = TRUE
+    )
+  below_feature_thresh <- sce$detected < 1000
+  MT.drop <-
+    isOutlier(sce$altexps_MT_percent, nmads = nmads, type = "higher")
+  spike.drop <-
+    isOutlier(sce$altexps_ERCC_percent,
+              nmads = nmads,
+              type = "higher")
+  doublet.drop <-
+    isOutlier(sce$scDblFinder_doublet_score,
+              nmads = nmads,
+              type = "higher")
+  contamination.drop <-
+    isOutlier(sce$decontX_contamination,
+              nmads = nmads,
+              type = "higher")
+  sce_qc <-
+    sce[, !(
+      libsize.drop |
+        feature.drop |
+        spike.drop |
+        MT.drop | below_feature_thresh | contamination.drop | doublet.drop
+    )]
+  #lets see how much each variable explains variability of the log gene scores
+  sce_qc <- logNormCounts(sce_qc)
+  vars <- getVarianceExplained(sce_qc,
+                               variables = c("timepoint", "cell_type", "batch", "sum"))
+  
+  saveRDS(sce_qc, file = sce_file)
+  pdf(
+    paste0(resultsdir, '/2.QC_sce.pdf') ,
+    width = 10,
+    height = 5,
+    paper = 'special'
+  )
+  print(plotExplanatoryVariables(vars))
+  print(
+    plotColData(
+      sce_qc,
+      x = "sum",
+      y = "detected",
+      colour_by = "timepoint"
+    ) +
+      scale_fill_brewer(palette = "Set2")
+  )
+  print(
+    plotColData(
+      sce_qc,
+      x = "sum",
+      y = "altexps_MT_percent",
+      other_fields = "timepoint"
+    ) +
+      facet_wrap( ~ timepoint) + scale_fill_brewer(palette = "Set2")
+  )
+  print(plotHighestExprs(sce_qc))
+  dev.off()
+}
+```
+## make a filtered and unfiltered seurat object to show the difference between before and after filtering
+```{r create seurat object}
+seu_file <- paste0(workdir, 'seu.RDS')
+seu_unfiltered_file <- paste0(workdir, 'seu_unfiltered.RDS')
+
+if (file.exists(seu_file)) {
+  print('seurat object files exists, loading and using them')
+  seu <- readRDS(seu_file)
+  seu_unfiltered <-
+    readRDS(seu_unfiltered_file)
+} else{
+  print('generating seurat objects')
+  metadata_2_include <-
+    c(
+      colnames(read.table(
+        s2s_sample_file, sep = '\t', header = T
+      )),
+      "altexps_ERCC_percent",
+      "altexps_MT_percent",
+      "scDblFinder_doublet_score",
+      "scDblFinder_weighted",
+      "decontX_contamination"
+    )
+  seu <-
+    CreateSeuratObject(
+      counts = counts(sce_qc),
+      assay = "sf",
+      meta.data = as.data.frame(colData(sce_qc)[, colnames(colData(sce_qc)) %in% metadata_2_include])
+    )
+  seu_unfiltered <-
+    CreateSeuratObject(
+      counts = counts(sce),
+      assay = "sf",
+      meta.data = as.data.frame(colData(sce)[, colnames(colData(sce)) %in% metadata_2_include])
+    )
+  
+  #set the timepoints in the correct order
+  cluster_order <-
+    c('d0', 'd11', 'd10', 'd24', 'mixABCG2', 'purABCG2', 'adult_LSC')
+  seu$timepoint <- factor(x = seu$timepoint, levels = cluster_order)
+  seu_unfiltered$timepoint <-
+    factor(x = seu_unfiltered$timepoint, levels = cluster_order)
+  
+  saveRDS(seu, file = seu_file)
+  saveRDS(seu_unfiltered, file = seu_unfiltered_file)
+}
+```
+
+Vizualize the QC cutoffs of the seurat objects
+```{r}
+seu$cell_type_time <- paste(seu$cell_type, seu$timepoint, sep = '_')
+seu_unfiltered$cell_type_time <-
+  paste(seu_unfiltered$cell_type, seu_unfiltered$timepoint, sep = '_')
+
+df <- as.data.frame(table(seu$cell_type_time))
+for (meta_id in c("cell_type_time", "descriptive_name")) {
+  print(meta_id)
+  
+  Idents(seu) <- meta_id
+  Idents(seu_unfiltered) <- meta_id
+  
+  colnames(df) <- c(meta_id, 'cells after QC')
+  pdf(
+    paste(resultsdir, paste0(paste0('3.QC_', meta_id), '.pdf'), sep = "/") ,
+    width = 20,
+    height = 12,
+    paper = 'special'
+  )
+  print(
+    VlnPlot(
+      object = seu_unfiltered,
+      features = ("nCount_sf"),
+      assay = 'sf'
+    ) + scale_y_continuous(limits = c(0, 20000)) + ggtitle('total UMI counts all cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("nCount_sf"),
+      assay = 'sf'
+    ) + scale_y_continuous(limits = c(0, 20000)) + ggtitle('total UMI counts filtered cells')
+  )
+  print(
+    VlnPlot(
+      object = seu_unfiltered,
+      features = c("nFeature_sf"),
+      assay = 'sf'
+    ) + scale_y_continuous(limits = c(0, 5000)) + ggtitle('genes measured all cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("nFeature_sf"),
+      assay = 'sf'
+    )  + scale_y_continuous(limits = c(0, 5000)) + ggtitle('genes measured filtered cells')
+  )
+  print(
+    VlnPlot(
+      object = seu_unfiltered,
+      features = c("altexps_MT_percent")
+    ) + scale_y_continuous(limits = c(0, 40)) + ggtitle('% mitochondrial reads all cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("altexps_MT_percent")
+    ) + scale_y_continuous(limits = c(0, 40)) + ggtitle('% mitochondrial reads filtered cells')
+  )
+  print(
+    VlnPlot(
+      object = seu_unfiltered,
+      features = c("altexps_ERCC_percent")
+    ) + scale_y_continuous(limits = c(0, 10)) + ggtitle('% ERCC reads all cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("altexps_ERCC_percent")
+    ) + scale_y_continuous(limits = c(0, 10)) + ggtitle('% ERCC reads filtered cells')
+  )
+  
+  print(
+    VlnPlot(
+      object = seu_unfiltered,
+      features = c("scDblFinder_doublet_score")
+    ) + scale_y_continuous(limits = c(0, 1)) + ggtitle('scDblFinder_doublet_score')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("scDblFinder_doublet_score")
+    ) + scale_y_continuous(limits = c(0, 1)) + ggtitle('scDblFinder_doublet_score_filtered')
+  )
+  
+  print(
+    VlnPlot(
+      object = seu_unfiltered,
+      features = c("decontX_contamination")
+    ) + scale_y_continuous(limits = c(0, 1)) + ggtitle('decontX_contamination')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("decontX_contamination")
+    ) + scale_y_continuous(limits = c(0, 1)) + ggtitle('decontX_contamination_filtered')
+  )
+  
+  print(
+    FeatureScatter(seu_unfiltered, feature1 = "nCount_sf", feature2 = "nFeature_sf") + ggtitle('% counts vs genes measured all cells')
+  )
+  print(
+    FeatureScatter(seu, feature1 = "nCount_sf", feature2 = "nFeature_sf") + ggtitle('% counts vs genes measured filtered cells')
+  )
+  plot.new()
+  grid.table(df)
+  dev.off()
+}
+
+```
+```{r}
+Idents(seu) <- "cell_type_time"
+#Idents(seu) <- "replica"
+pdf(
+  paste(resultsdir, paste0(paste0(
+    '3.QC_alternative_viz'
+  ), '.pdf'), sep = "/") ,
+  width = 7,
+  height = 5,
+  paper = 'special'
+)
+print(VlnPlot(
+  object = seu,
+  features = c(
+    "nCount_sf",
+    "nFeature_sf",
+    "scDblFinder_doublet_score",
+    'decontX_contamination',
+    'altexps_ERCC_percent',
+    'altexps_MT_percent'
+  ),
+  assay = 'sf',
+  split.by = 'replica',
+  stack = T,
+  flip = T
+)) #scale_y_continuous(limits = c(0,20000)) + ggtitle('total UMI counts all cells'))
+dev.off()
+
+```
+
+
+Implement multi core support seurat
+```{r}
+plan("multisession", workers = 12)
+#So to set Max mem size to 8GB, you would run :
+options(future.globals.maxSize = 8000 * 1024 ^ 2)
+future.seed = TRUE
+```
+
+#Perform cell-cycle scoring
+```{r}
+#So to set Max mem size to 8GB, you would run :
+options(future.globals.maxSize = 8000 * 1024 ^ 2)
+
+scalled_object <- paste0(workdir, '/seu_scaled.rds')
+
+if (file.exists(scalled_object)) {
+  print('scalled  file exists, loading and using it')
+  seu <- readRDS(scalled_object)
+} else {
+  print('no scaled file found, generating one')
+  
+  seu <- NormalizeData(
+    object = seu,
+    assay = "sf",
+    normalization.method = "LogNormalize",
+    scale.factor = 10000
+  )
+  
+  seu <-
+    FindVariableFeatures(seu, selection.method = "vst", nfeatures = 3000)
+  seu <-
+    ScaleData(
+      seu,
+      features = rownames(seu),
+      assay = 'sf',
+      vars.to.regress = c('nCount_sf', 'nFeature_sf')
+    )
+  seu <-
+    CellCycleScoring(
+      seu,
+      s.features = cc.genes.updated.2019$s.genes,
+      g2m.features = cc.genes.updated.2019$g2m.genes,
+      set.ident = TRUE
+    )
+  seu <-
+    RunPCA(seu,
+           features = c(
+             cc.genes.updated.2019$s.genes,
+             cc.genes.updated.2019$g2m.genes
+           ))
+  
+  saveRDS(seu, file = scalled_object)
+}
+pdf(
+  paste(resultsdir, '4.cell_cycle_markers.pdf', sep = "/") ,
+  width = 12,
+  height = 6,
+  paper = 'special'
+)
+Idents(seu) <- "Phase"
+PCAPlot(seu)
+Idents(seu) <- "timepoint"
+PCAPlot(seu, cols = "Set2")
+
+RidgePlot(
+  seu,
+  features = c("PCNA", "TOP2A", "MCM6", "MKI67"),
+  assay = 'sf',
+  ncol = 2,
+  slot = "data"
+)
+RidgePlot(
+  seu,
+  features = c("S.Score", "G2M.Score"),
+  ncol = 2,
+  group.by = "timepoint"
+) + scale_fill_brewer(palette = "Set2")
+dev.off()
+seu$CC.Difference <- seu$S.Score - seu$G2M.Score
+```
+
+Perform PCA, UMAP and clustering
+```{r}
+clustered_object <- paste0(workdir, 'seu_clustered.rds')
+PCs <- 10
+res <- 0.3
+
+if (file.exists(clustered_object)) {
+  print('clustered object exists, loading and using it')
+  seu <- readRDS(clustered_object)
+} else {
+  seu <- RunPCA(seu, verbose = FALSE, npcs = 50)
+  mat <-
+    Seurat::GetAssayData(seu, assay = "sf", slot = "scale.data")
+  
+  pca <- seu[["pca"]]
+  # Get the total variance:
+  total_variance <- sum(matrixStats::rowVars(mat))
+  eigValues = (pca@stdev) ^ 2  ## EigenValues
+  varExplained = eigValues / total_variance
+  Stdev(object = seu[["pca"]])[1]
+  Idents(seu) <- "timepoint"
+  pdf(
+    paste0(resultsdir, '/5.Principle_components.pdf') ,
+    width = 12,
+    height = 6,
+    paper = 'special'
+  )
+  print(ElbowPlot(seu, ndims = 40))
+  for (pcs in c(1:20)) {
+    pc1_viz <- pcs * 2 - 1
+    pc2_viz <- pcs * 2
+    y_label = paste0(paste0(paste0("PC", pc2_viz), ' stdev:  '), round(Stdev(object = seu[["pca"]])[pc2_viz], 3))
+    x_label = paste0(paste0(paste0("PC", pc1_viz), ' stdev:  '), round(Stdev(object = seu[["pca"]])[pc1_viz], 3))
+    PC_dimred <-
+      DimPlot(
+        seu,
+        reduction = "pca",
+        cols = 'Set2',
+        dims = c(pc1_viz, pc2_viz)
+      ) + labs(y = y_label, x = x_label)
+    PC1_genes <-
+      DimHeatmap(seu, dims = c(pc1_viz), fast = FALSE)
+    PC2_genes <-
+      DimHeatmap(seu, dims = c(pc2_viz), fast = FALSE)
+    final_plot <-
+      grid.arrange(
+        as_grob(PC_dimred),
+        as_grob(PC2_genes),
+        as_grob(PC1_genes),
+        ncol = 2,
+        as.table = TRUE
+      )
+    #heights=c(3,1))
+    print(final_plot)
+  }
+  dev.off()
+  print('next')
+  umap_col = "timepoint"
+  umap_col2 = "descriptive_name"
+  # PCs used for different UMAP representations
+  pcs_for_overview = c(5, 10, 15, 20, 25, 30, 35)
+  # Generating a combined plot with only a legend in the first plotted (since this will be the same for the others)
+  plot.list <- list()
+  plot.list2 <- list()
+  label.vector <- c(umap_col, umap_col2)
+  j = 0
+  
+  for (i in (1:length(pcs_for_overview))) {
+    seu <- RunUMAP(seu, dims = 1:pcs_for_overview[i])
+    dimnr <- as.character(pcs_for_overview[i])
+    print(dimnr)
+    if (i == 1) {
+      plot.list[[dimnr]] <-
+        DimPlot(
+          seu,
+          reduction = "umap",
+          group.by = label.vector[1],
+          combine = TRUE,
+          cols = 'Set2'
+        ) + ggtitle(paste0("UMAP 1:", dimnr))
+      plot.list2[[dimnr]] <-
+        DimPlot(
+          seu,
+          reduction = "umap",
+          group.by = label.vector[2],
+          combine = TRUE,
+          cols = 'Set2'
+        ) + ggtitle(paste0("UMAP 1:", dimnr))
+      i = i + 1
+    }
+    else {
+      plot.list[[dimnr]] <-
+        DimPlot(
+          seu,
+          reduction = "umap",
+          group.by = label.vector[1],
+          cols = 'Set2',
+          combine = TRUE
+        ) + ggtitle(paste0("UMAP 1:", dimnr)) + theme(legend.position = "none")
+      plot.list2[[dimnr]] <-
+        DimPlot(
+          seu,
+          reduction = "umap",
+          group.by = label.vector[2],
+          cols = 'Set2',
+          combine = TRUE
+        ) + ggtitle(paste0("UMAP 1:", dimnr)) + theme(legend.position = "none")
+      i = i + 1
+    }
+  }
+  pdf(
+    paste(resultsdir, "6.norm_UMAPdiffsettings.pdf", sep = '/'),
+    width = 20,
+    height = 15
+  )
+  print(CombinePlots(plot.list, nrows = round(length(pcs_for_overview) /
+                                                3)))
+  print(ElbowPlot(seu))
+  dev.off()
+  
+  print('running umap')
+  seu <- RunUMAP(seu, dims = 1:PCs)
+  seu <- FindNeighbors(seu, dims = 1:PCs)
+  #seu <- FindClusters(seu, verbose = FALSE, resolution = 0.5, graph.name = "sf_snn")
+  #seu <- FindClusters(seu, verbose = FALSE, resolution = 0.4, graph.name = "spliced_snn")
+  seu <- FindClusters(seu, verbose = FALSE, resolution = res)
+  
+  seu <- BuildClusterTree(seu, features = row.names(seu))
+  data.tree <- Tool(object = seu, slot = "BuildClusterTree")
+  #cluster_variable_name <- paste0("spliced_snn_res.", 0.4)
+  cluster_variable_name <- paste0("sf_snn_res.", res)
+  
+  
+  pdf(
+    paste(resultsdir, '7.norm_umap.pdf', sep = "/") ,
+    width = 8,
+    height = 8,
+    paper = 'special'
+  )
+  DimPlot(seu, label = TRUE)
+  p2 <-
+    ggplot(data.tree, aes(x, y)) + geom_tree() + theme_tree()  + geom_tiplab()
+  p1 <-
+    DimPlot(seu, label = TRUE, group.by = 'seurat_clusters') + ggtitle("Louvain Clustering") + ggtitle(paste0("cluster resolution ", 0.4))
+  p3 <-
+    ggplot(seu@meta.data, aes(eval(parse(text = cluster_variable_name)), fill = timepoint)) +
+    geom_bar(position = 'fill', stat = "count") + scale_fill_brewer(palette =
+                                                                      "Set2")
+  p4 <-
+    ggplot(seu@meta.data, aes(eval(parse(text = cluster_variable_name)), fill = cell_type)) +
+    geom_bar(position = 'fill', stat = "count") + scale_fill_brewer(palette =
+                                                                      "Dark2")
+  print(multiplot(p2, p3, p1, p4, ncol = 2))
+  
+  print(
+    DimPlot(
+      seu,
+      label = FALSE,
+      group.by = "timepoint",
+      cols = 'Set2'
+    ) + ggtitle("timepoint")
+  )
+  print(
+    DimPlot(
+      seu,
+      label = FALSE,
+      group.by = "cell_type",
+      cols = 'Dark2'
+    ) + ggtitle("original identity")
+  )
+  
+  print(
+    DimPlot(seu, label = TRUE, group.by = 'seurat_clusters') + ggtitle("Louvain Clustering") + ggtitle(paste0("cluster resolution ", res))
+  )
+  print(DimPlot(seu, label = FALSE, group.by = "batch") + ggtitle("batch"))
+  
+  print(DimPlot(seu, label = FALSE, group.by = "descriptive_name") + ggtitle("name"))
+  print(FeaturePlot(
+    seu,
+    features = 'nCount_sf',
+    cols = c('white', 'purple')
+  ))
+  print(FeaturePlot(seu, features = 'scDblFinder_doublet_score'))
+  print(FeaturePlot(seu, features = 'decontX_contamination'))
+  
+  print(FeaturePlot(
+    seu,
+    features = 'nCount_sf',
+    cols = c('white', 'purple')
+  ))
+  print(FeaturePlot(
+    seu,
+    features = 'nFeature_sf',
+    cols = c('white', 'purple')
+  ))
+  print(FeaturePlot(
+    seu,
+    features = 'altexps_MT_percent',
+    cols = c('white', 'purple')
+  ))
+  print(DimPlot(seu, group.by = 'Phase'))
+  print(FeaturePlot(
+    seu,
+    features = 'S.Score',
+    cols = c('white', 'dodgerblue3')
+  ))
+  print(FeaturePlot(
+    seu,
+    features = 'G2M.Score',
+    cols = c('white', 'green4')
+  ))
+  dev.off()
+  
+  
+  #lets first perform clustering, after which we can start to quantify gene expression in all the clusters.
+  future.seed = TRUE
+  pdf(
+    paste(resultsdir, "8.clustering_resolution.pdf", sep = '/'),
+    width = 20,
+    height = 16
+  )
+  for (i in 1:20) {
+    future.seed = TRUE
+    res_test <- i / 10
+    print(res_test)
+    cluster_variable_name <- paste0("sf_snn_res.", res_test)
+    seu <-
+      FindClusters(
+        seu,
+        verbose = FALSE,
+        resolution = res_test,
+        graph.name = "sf_snn"
+      )
+    seu <- BuildClusterTree(seu, features = row.names(seu))
+    
+    # pull the tree
+    data.tree <- Tool(object = seu, slot = "BuildClusterTree")
+    # plot the tree
+    p2 <-
+      ggplot(data.tree, aes(x, y)) + geom_tree() + theme_tree()  + geom_tiplab()
+    p1 <-
+      DimPlot(seu, label = TRUE, group.by = 'seurat_clusters') + ggtitle("Louvain Clustering") + ggtitle(paste0("cluster resolution ", res_test))
+    p3 <-
+      ggplot(seu@meta.data, aes(eval(parse(text = cluster_variable_name)), fill = timepoint)) +
+      geom_bar(position = 'fill', stat = "count") + scale_fill_brewer(palette =
+                                                                        "Set2")
+    p4 <-
+      ggplot(seu@meta.data, aes(eval(parse(text = cluster_variable_name)), fill = cell_type)) +
+      geom_bar(position = 'fill', stat = "count") + scale_fill_brewer(palette =
+                                                                        "Dark2")
+    print(multiplot(p2, p3, p1, p4, ncol = 2))
+  }
+  
+  print(clustree(seu, prefix = "sf_snn_res.", node_colour = 'sc3_stability'))
+  print(clustree(seu, prefix = "sf_snn_res."))
+  
+  dev.off()
+  
+  
+  #0.4 seems the best cluster resolution to find heterogeneity that isńt cell cycle based
+  seu <-
+    FindClusters(seu,
+                 verbose = FALSE,
+                 resolution = res ,
+                 graph.name = "sf_snn")
+  DimPlot(seu, label = TRUE, group.by = 'seurat_clusters') + ggtitle("Louvain Clustering")
+  seu[["old.ident"]] <- Idents(object = seu)
+  saveRDS(seu, file = clustered_object)
+  pdf(
+    paste(resultsdir, "8b.clustering_costum_QC.pdf", sep = '/'),
+    width = 20,
+    height = 8
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("nCount_sf"),
+      assay = 'sf'
+    ) + scale_y_continuous(limits = c(0, 20000)) + ggtitle('total UMI counts filtered cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("nFeature_sf"),
+      assay = 'sf'
+    )  + scale_y_continuous(limits = c(0, 5000)) + ggtitle('genes measured filtered cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("altexps_MT_percent")
+    ) + scale_y_continuous(limits = c(0, 40)) + ggtitle('% mitochondrial reads filtered cells')
+  )
+  print(
+    VlnPlot(
+      object = seu,
+      features = c("altexps_ERCC_percent")
+    ) + scale_y_continuous(limits = c(0, 10)) + ggtitle('% ERCC reads filtered cells')
+  )
+  print(VlnPlot(
+    object = seu,
+    features = c("scDblFinder_doublet_score")
+  ))
+  print(VlnPlot(
+    object = seu,
+    features = c("decontX_contamination")
+  ))
+  dev.off()
+}
+
+```
+
+```{r}
+seu <- BuildClusterTree(seu, features = row.names(seu))
+data.tree <- Tool(object = seu, slot = "BuildClusterTree")
+# plot the tree
+p_clus <- ggtree(data.tree)
+DimPlot(seu, label = TRUE)
+```
+
+#lets merge cell cycle related clusters and rename the clusters
+```{r}
+clustered_object <- paste0(workdir, 'seu_clustered.rds')
+seu <- readRDS(clustered_object)
+colpal = c(
+    '#FFCCCC',#'PSC' 
+    '#CC99CC',#'PSC-like' 
+    '#99CC99',#'meso-like-1'
+    '#6699CC',#'meso-like-3' 
+    '#CCCC99',#'meso-like-2' 
+    '#FFCC99',#'early-epi' 
+    '#FF9933',#'iLSC1' 
+    '#CCCC33'#'iLSCs2' = 
+  )
+
+cluster_order <- c(0,3,4,7,6,5,1,8,2)
+#levels(x = seu@active.ident) <- cluster_order
+#
+seu <- RenameIdents(
+  object = seu,
+  '0' = "PSC",
+  '3' = 'PSC',
+  '4' = 'PSC-like',
+  '7' = 'meso-like-3',
+  '6' = 'meso-like-2',
+  '5' = 'meso-like-1',
+  '1' = 'early-epi',
+  '2' = 'iLSC-1',
+  '8' = 'iLSC-2'
+)
+
+levels(x = seu@active.ident) <-
+  c(
+    'PSC',
+    'PSC-like',
+    'meso_like-3',
+    'meso-like-2',
+    'meso-like-1',
+    'early-epi',
+    'iLSC-1',
+    'iLSC-2'
+  )
+seu$seurat_clusters <- seu@active.ident
+DimPlot(seu, label = TRUE, group.by = 'seurat_clusters')
+
+DimPlot(
+  seu,
+  label = TRUE,
+  group.by = 'seurat_clusters',
+  cols = colpal
+)
+
+#saveRDS(seu, file = "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/TF_LSC_diff/single_cell_objects/iLSC_diff_scRNAseq.RDS")
+
+```
+Supplementary gene expression figure
+```{r}
+Idents(seu) <- "seurat_clusters"
+marker_gene_list <-
+  c(
+    'SOX2',
+    'LIN28A',
+    'NANOG',
+    'POU5F1',
+    'MT1G',
+    'PITX1',
+    'GATA4',
+    'TGFBI',
+    'ZEB2',
+    'COL1A1',
+    'TGFB2',
+    'GREM1',
+    'HAND1',
+    'LUM',
+    'GABRP',
+    'ACTC1',
+    'ACTA2',
+    'COL8A1',
+    'ABCG2',
+    'TP63',
+    'KRT14',
+    'PAX6',
+    'CXCL14',
+    'KRT15',
+    'AQP3',
+    'MUC16',
+    'S100A9',
+    'KRT1',
+    'KRT72'
+
+  )
+
+pdf(
+  paste(resultsdir, "supplementary_figure_genes.pdf", sep = '/'),
+  width = 83/8,
+  height = 117/8
+)
+print(FeaturePlot(seu, features = marker_gene_list, ncol = 4, order = TRUE))
+dev.off()
+
+pdf(
+  paste(resultsdir, "supplementary_figure_dotplot_genes.pdf", sep = '/'),
+  width = 6,
+  height = 10
+)
+print(DotPlot(seu, features = rev(marker_gene_list))+coord_flip())
+dev.off()
+
+```
+Output the session info
+```{r}
+writeLines(capture.output(sessionInfo()), paste(resultsdir, "sessionInfo.txt", sep = '/'))
+```
+
+Figure 2C
+lets make some marker genes gene expression plots
+```{r}
+Idents(seu) <- "seurat_clusters"
+marker_gene_list <-
+  c(
+    'SOX2',
+    'LIN28A',
+    'NANOG',
+    'MT1G',
+    'PITX1',
+    'GATA4',
+    'TGFBI',
+    'ZEB2',
+    'COL1A1',
+    'TGFB2',
+    'GREM1',
+    'HAND1',
+    'LUM',
+    'GABRP',
+    'ACTC1',
+    'ACTA2',
+    'ABCG2',
+    'TP63',
+    'KRT14',
+    'CXCL14',
+    'KRT15',
+    'AQP3',
+    'MUC16',
+    'S100A9'
+  )
+
+pdf(
+  paste(resultsdir, "9d_genes_over_clusters.pdf", sep = '/'),
+  width = 5,
+  height = 6
+)
+
+print(VlnPlot(
+  seu,
+  fill.by = 'ident',
+  col = c(
+    '#FFCCCC',
+    '#CC99CC',
+    '#6699CC',
+    '#CCCC99',
+    '#99CC99',
+    '#FFCC99',
+    '#FF9933',
+    '#CCCC33'),
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T
+))
+# print(VlnPlot(
+#   seu,
+#   features = marker_gene_list,
+#   stack = TRUE,
+#   flip = T
+# ))
+# print(FeaturePlot(seu, features = marker_gene_list))
+dev.off()
+
+
+
+print(VlnPlot(
+  seu,
+  fill.by = 'ident',
+  col = c(
+    '#FFCCCC',
+    '#CC99CC',
+    '#6699CC',
+    '#CCCC99',
+    '#99CC99',
+    '#FFCC99',
+    '#FF9933',
+    '#CCCC33'),
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T
+))
+
+```
+
+```{r}
+  pdf(
+    paste(resultsdir, "8b.umap_other_markers.pdf", sep = '/'),
+    width = 7,
+    height = 3
+  )
+FeaturePlot(seu,c('KRT1','KRT72'), order = TRUE)
+FeaturePlot(seu,c('KRT18','KRT8'))
+FeaturePlot(seu,c('S100A10','S100A11'))
+FeaturePlot(seu,c('OVOL1','OTX1'), order = TRUE)
+FeaturePlot(seu,c('FOSL2','FOSL1'))
+
+
+dev.off()
+```
+
+
+neural crest genes
+```{r}
+marker_gene_list <- list('TFAP2A','ZIC2','MSX2','SNAI2','ETS1','CDH1','ZEB2')
+marker_gene_list <- list('CDH1','ZEB2','HAND1','LUM','TFAP2C','KLF5','DCN','FOSL2','KRT10','KRT19')
+marker_gene_list <- list('NANOG','POU5F1','SOX2',
+                         'ABCG2','TP63',
+                         'GABRP','EPAS1','TGFBI','LUM','VTCN1',
+                         'ACTA2','ACTC1','HAND1','HAND2','CALD','MYLK','TPM1','TPM2',
+                         'KRT18','S100A10','S100A11','KLF4',
+                         'KRT15','KRT1','KRT6A','KRT23','KRT73',
+                         'KRT14','KRT17','TP63','CXCL14','CAV1',
+                         'MUC16','KRT10','KRT1','KRT72',
+                         'ACTA2')
+marker_gene_list <- unique(marker_gene_list)
+
+Idents(seu) <- "seurat_clusters"
+DefaultAssay(object = seu) <- 'sf'
+pdf(
+  paste(resultsdir, "neualCrestgenes_over_clusters.pdf", sep = '/'),
+  width = 10,
+  height = 40
+)
+
+print(VlnPlot(
+  seu,
+  fill.by = 'ident',
+  col = c(
+    '#FFCCCC',
+    '#CC99CC',
+    '#6699CC',
+    '#CCCC99',
+    '#99CC99',
+    '#FFCC99',
+    '#FF9933',
+    '#CCCC33'),
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T
+))
+print(VlnPlot(
+  seu,
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T
+))
+print(FeaturePlot(seu, features = marker_gene_list))
+dev.off()
+
+
+
+print(VlnPlot(
+  seu,
+  fill.by = 'ident',
+  col = c(
+    '#FFCCCC',
+    '#CC99CC',
+    '#6699CC',
+    '#CCCC99',
+    '#99CC99',
+    '#FFCC99',
+    '#FF9933',
+    '#CCCC33'),
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T
+))
+```
+
+
+
+lets get annotation percentages
+```{r}
+DimPlot(
+  seu,
+  label = TRUE,
+  group.by = 'timepoint',
+)
+```
+```{r}
+p1 <- ggplot(seu@meta.data, aes(factor(seurat_clusters, rev(
+  levels(x = seu@active.ident)
+)), fill = timepoint)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'horizontal',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+  guides(fill = guide_legend(
+    nrow =
+      3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + coord_flip() + scale_fill_manual(values = c(
+    'd0' = '#CCCCCC',
+    'd11' = '#999999',
+    'd24' = '#333333'
+  ))
+#scale_fill_brewer(palette = "Set2") +
+
+
+p2 <- ggplot(seu@meta.data, aes(factor(seurat_clusters, rev(
+  levels(x = seu@active.ident)
+)), fill = cell_type)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'vertical',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.y = element_blank(),
+                                      axis.ticks.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+  guides(fill = guide_legend(
+    nrow =
+      3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette =
+                                                                     "Dark2") + coord_flip()
+
+p3 <-
+  ggplot(seu@meta.data[order(seu@meta.data$Phase), ], aes(factor(seurat_clusters, rev(
+    levels(x = seu@active.ident)
+  )), fill = Phase)) + geom_bar(position = 'fill', stat =
+                                  "count") + theme(
+                                    legend.position = 'bottom',
+                                    legend.box = 'vertical',
+                                    axis.title.x = element_blank(),
+                                    axis.title.y = element_blank(),
+                                    axis.text.y = element_blank(),
+                                    axis.ticks.y = element_blank(),
+                                    axis.text.x = element_text(angle = 90),
+                                    panel.background = element_blank()
+                                  ) +
+  guides(fill = guide_legend(
+    nrow = 3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + coord_flip()
+
+print(p1 | p2 | p3)
+```
+```{r}
+table(seu$seurat_clusters)
+```
+Get numbers for suplemental table
+```{r}
+for (celltype in unique(seu$seurat_clusters)){
+  print(celltype)
+  subseu = seu[,seu$seurat_clusters == celltype]
+  print(table(subseu$timepoint))
+  print(table(subseu$cell_type))
+  print(table(subseu$Phase))
+
+}
+
+```
+
+
+
+```{r}
+  pdf(
+    paste(resultsdir, "PODXL_expr.pdf", sep = '/'),
+    width = 4,
+    height = 4
+  )
+print(FeaturePlot(seu,c('PODXL'), cols = c('lightgrey','#a6bddb','#045a8d')))
+dev.off()
+
+print(FeaturePlot(seu,c('FOSL2','FOSL1')))
+print(FeaturePlot(seu,c('JUND'), cols = c('lightgrey','#a6bddb','#045a8d')))
+
+```
+
+Lets propperly vizualize the per cluster QC
+```{r}
+#Idents(seu) <- "replica"
+
+pdf(
+  paste(resultsdir, paste0(paste0(
+    '8b.clustering_costum_QC_altviz.pdf'
+  ), '.pdf'), sep = "/") ,
+  width = 7,
+  height = 5,
+  paper = 'special'
+)
+print(VlnPlot(
+  object = seu,
+  features = c(
+    "nCount_sf",
+    "nFeature_sf",
+    "scDblFinder_doublet_score",
+    #'decontX_contamination',
+    'altexps_ERCC_percent'
+    #'altexps_MT_percent'
+  ),
+  assay = 'sf',
+  stack = T,
+  cols = colpal,
+  fill.by = 'ident',
+  flip = T
+)) #scale_y_continuous(limits = c(0,20000)) + ggtitle('total UMI counts all cells'))
+dev.off()
+```
+
+
+Lets vizualize the UMAPs fo the various batches
+```{r}
+PCs <- 10
+
+
+Idents(seu) <- 'batch'
+DimPlot(seu, label = TRUE)
+
+idx1 <- which(seu$batch == 1)
+idx2 <- which((seu$batch == 2))
+idx12 <- which((seu$batch == 2|seu$batch == 1))
+idx3 <- which(seu$batch == 3)
+idx23 <- which((seu$batch == 2|seu$batch == 3))
+idx13 <- which((seu$batch == 1|seu$batch == 3))
+
+idx123 <- which((seu$batch == 2|seu$batch == 1|seu$batch == 3))
+
+batch1 <- seu[,idx1]
+batch2 <- seu[,idx2]
+batch12 <- seu[,idx12]
+batch3 <- seu[,idx3]
+batch23 <- seu[,idx23]
+batch13 <- seu[,idx13]
+
+batch123 <- seu[,idx123]
+
+print('running umap')
+batch1 <- RunPCA(batch1, verbose = FALSE, npcs = 30)
+batch1 <- RunUMAP(batch1, dims = 1:PCs)
+batch1 <- FindNeighbors(batch1, dims = 1:PCs)
+batch2 <- RunPCA(batch2, verbose = FALSE, npcs = 30)
+batch2 <- RunUMAP(batch2, dims = 1:PCs)
+batch2 <- FindNeighbors(batch2, dims = 1:PCs)
+batch3 <- RunPCA(batch3, verbose = FALSE, npcs = 30)
+batch3 <- RunUMAP(batch3, dims = 1:PCs)
+batch3 <- FindNeighbors(batch3, dims = 1:PCs)
+batch12 <- RunPCA(batch12, verbose = FALSE, npcs = 30)
+batch12 <- RunUMAP(batch12, dims = 1:PCs)
+batch12 <- FindNeighbors(batch12, dims = 1:PCs)
+batch13 <- RunPCA(batch13, verbose = FALSE, npcs = 30)
+batch13 <- RunUMAP(batch13, dims = 1:PCs)
+batch13 <- FindNeighbors(batch13, dims = 1:PCs)
+batch23 <- RunPCA(batch23, verbose = FALSE, npcs = 30)
+batch23 <- RunUMAP(batch23, dims = 1:PCs)
+batch23 <- FindNeighbors(batch23, dims = 1:PCs)
+batch123 <- RunPCA(batch123, verbose = FALSE, npcs = 30)
+batch123 <- RunUMAP(batch123, dims = 1:PCs)
+batch123 <- FindNeighbors(batch123, dims = 1:PCs)
+
+pdf(
+  paste(resultsdir, "7b.batches_UMAP.pdf", sep = '/'),
+  width = 4,
+  height = 4
+)
+print(DimPlot(batch1, label = F, group.by = 'seurat_clusters', cols = colpal) + NoLegend() + NoAxes() + ggtitle(""))
+print(DimPlot(batch2, label = F, group.by = 'seurat_clusters', cols = colpal) +  NoLegend() + NoAxes() + ggtitle(""))
+print(DimPlot(batch3, label = F, group.by = 'seurat_clusters', cols = colpal) + NoLegend() + NoAxes() + ggtitle(""))
+print(DimPlot(batch12, label = F, group.by = 'seurat_clusters', cols = colpal)  + NoLegend()+ NoAxes() + ggtitle(""))
+print(DimPlot(batch23, label = F, group.by = 'seurat_clusters', cols = colpal) + NoLegend()+ NoAxes() + ggtitle(""))
+print(DimPlot(batch13, label = F, group.by = 'seurat_clusters', cols = colpal) +NoLegend()+ NoAxes() + ggtitle(""))
+print(DimPlot(batch123, label = F, group.by = 'seurat_clusters', cols = colpal) + NoLegend()+ NoAxes() + ggtitle(""))
+print(DimPlot(batch123, label = F, group.by = 'seurat_clusters', cols = colpal) + ggtitle('batch1&2&3'))
+
+dev.off()
+
+```
+resolution GIF
+```{r}
+
+ for (i in 1:20) {
+    future.seed = TRUE
+    res_test <- i / 10
+    print(res_test)
+    cluster_variable_name <- paste0("sf_snn_res.", res_test)
+    p1 <- DimPlot(seu, label = TRUE, group.by = cluster_variable_name)
+    ggsave(plot = (p1+ NoLegend() + NoAxes()+ ggtitle(paste0("cluster resolution ", res_test))), file = paste0(resultsdir, "/8b.resolution_", res_test,'.png'))
+ }
+
+```
+
+smaller QC images
+```{r}
+  pdf(
+    paste(resultsdir, '7.norm_umap_smaller.pdf', sep = "/") ,
+    width = 5,
+    height = 5,
+    paper = 'special'
+  )
+  print(
+    DimPlot(
+      seu,
+      label = FALSE,
+      group.by = "timepoint",
+      cols = 'Set2'
+    ) + ggtitle("timepoint")
+  )
+  print(
+    DimPlot(
+      seu,
+      label = FALSE,
+      group.by = "cell_type",
+      cols = 'Dark2'
+    ) + ggtitle("original identity")
+  )
+  
+  print(
+    DimPlot(seu, label = TRUE, group.by = 'seurat_clusters') + ggtitle("Louvain Clustering") + ggtitle(paste0("cluster resolution ", res))
+  )
+  print(DimPlot(seu, label = FALSE, group.by = "batch") + ggtitle("batch"))
+  
+  print(DimPlot(seu, label = FALSE, group.by = "descriptive_name") + ggtitle("name"))
+  print(FeaturePlot(
+    seu,
+    features = 'nCount_sf',
+    cols = c('white', 'purple')
+  ))
+  print(FeaturePlot(seu, features = 'scDblFinder_doublet_score'))
+  print(FeaturePlot(seu, features = 'decontX_contamination'))
+  
+  print(FeaturePlot(
+    seu,
+    features = 'nCount_sf',
+    cols = c('white', 'purple')
+  ))
+  print(FeaturePlot(
+    seu,
+    features = 'nFeature_sf',
+    cols = c('white', 'purple')
+  ))
+  print(FeaturePlot(
+    seu,
+    features = 'altexps_MT_percent',
+    cols = c('white', 'purple')
+  ))
+  print(DimPlot(seu, group.by = 'Phase'))
+  print(FeaturePlot(
+    seu,
+    features = 'S.Score',
+    cols = c('white', 'dodgerblue3')
+  ))
+  print(FeaturePlot(
+    seu,
+    features = 'G2M.Score',
+    cols = c('white', 'green4')
+  ))
+  dev.off()
+```
+Lets make seperate box plots for some of the immunostaining 
+```{r}
+genelistlist <- list(c('POU5F1','PODXL','LIN28A'),
+c('TP63','ABCG2'),
+c('TP63','KRT14','KRT15','CXCL14'),
+c('SOX2','NANOG','PODXL','POU5F1','LIN28A'),
+c('HAND1','GATA4','LUM','ZEB2','COL8A1'),
+c('MUC16','TP63'),
+c('PAX6','TP63'))
+
+pdf(
+paste(resultsdir, 'violin_split.pdf', sep = "/") ,
+width = 3,
+height = 4,
+paper = 'special'
+)
+
+plotlist = list()
+for (genelist in genelistlist){
+  #Idents(seu) <- "seurat_clusters"
+  p <- VlnPlot(
+  seu,
+  features =genelist,
+  stack = TRUE,
+  flip = T,
+  col = colpal,
+  assay = 'sf',
+  fill.by = 'ident')
+  print(p+ NoLegend())
+}
+
+
+dev.off()
+```
+
+
+#lets generate some day24 pseudobulk & day24_iLSC pseudobulk counts
+```{r}
+seu_d24 <- seu[, seu$timepoint == 'd24']
+pseudo_counts_df <- as.data.frame(rownames(seu_d24@assays$sf@counts))
+
+for (cell_type in unique(seu_d24$cell_type)){
+  print(cell_type)
+  sub_seu <- seu_d24[,seu_d24$cell_type == cell_type]
+  for (replica in unique(sub_seu$replica)){
+    print(replica)
+    sub_sub_seu <- sub_seu[,sub_seu$replica == replica]
+    pseudo_counts <- rowSums(sub_sub_seu@assays$sf@counts)
+    pseudo_counts_df[[paste0(cell_type,'_all_rep',replica)]] <- pseudo_counts
+    sub_sub_seu <- sub_sub_seu[,sub_sub_seu$seurat_clusters == 'iLSCs']
+    pseudo_counts <- rowSums(sub_sub_seu@assays$sf@counts)
+    pseudo_counts_df[[paste0(cell_type,'_iLSCs_rep',replica)]] <- pseudo_counts
+  }
+}
+rownames(pseudo_counts_df) <- pseudo_counts_df$`rownames(seu_d24@assays$sf@counts)`
+pseudo_counts_df$`rownames(seu_d24@assays$sf@counts)` <- NULL
+
+write.table(pseudo_counts_df, file = paste(resultsdir, "pseudobulk_table.tsv", sep = '/'))
+
+```
+
+#lets quantify the ammount of day24 cells expressing AREG and or ITGA6 and or PODXL
+#ridge plot?
+```{r}
+seu_d24 <- seu[, seu$timepoint == 'd24']
+Idents(seu_d24) <- "cell_type"
+
+i = 1
+pdf(
+  paste(resultsdir, "AREG_ITGA6_scatter.pdf", sep = '/'),
+  width = 5,
+  height = 4
+)
+
+percentage_list = list(list('name','perc_ITGA6','perc_AREG','perc_PODXL'))
+
+# dark2 colours
+colours <- c('#1b9e77','#d95f02','#7570b3')
+for (celltype in c('003bC', 'B2HT', 'ESC')) {
+  seu_sub <- seu_d24[, seu_d24$cell_type == celltype]
+  for (replica in unique(seu_sub$replica)) {
+    name <- paste0(celltype, ' replica ', replica)
+    print(name)
+    seu_sub_rep <- seu_sub[, seu_sub$replica == replica]
+    #seu_sub_rep <- seu_sub
+    counts = seu_sub_rep[['sf']]@counts
+    ncells = ncol(counts)
+    pos_ITGA6_cells = ncol(counts[, counts['ITGA6', ] > 0])
+    pos_AREG_cells = ncol(counts[, counts['AREG', ] > 0])
+    pos_NANOG_cells = ncol(counts[, counts['NANOG', ] > 0])
+    pos_PODXL_cells = ncol(counts[, (counts['PODXL', ] > 0)])
+    
+    perc_AREG = round(pos_AREG_cells / ncells * 100)
+    perc_ITGA6 = round(pos_ITGA6_cells / ncells * 100)
+    perc_NANOG = round(pos_NANOG_cells / ncells * 100)
+    perc_PODXL = round(pos_PODXL_cells / ncells * 100)
+    percentage_list[[i+1]] <- c(name,perc_ITGA6,perc_AREG,perc_PODXL)
+    i = i + 1
+  
+}}
+dev.off()
+```
+```{r}
+percentage_df <- as.data.frame(do.call(rbind,percentage_list))
+rownames(percentage_df) <- percentage_df$V1
+ percentage_df$V1 <- NULL
+colnames(percentage_df) <- c('perc_ITGA6','perc_AREG','perc_PODXL')
+percentage_df <- percentage_df[-1,]
+percentage_df$sample <- rownames(percentage_df)
+percentage_df_long <- percentage_df %>% pivot_longer(cols = starts_with('perc'), names_to = 'gene')
+percentage_df_long$value <- as.numeric(percentage_df_long$value)
+percentage_df_long$replica <- str_split_fixed(percentage_df_long$sample,' replica ',2)[,2]
+percentage_df_long$sample <- str_split_fixed(percentage_df_long$sample,' replica ',2)[,1]
+
+```
+
+```{r}
+pdf(
+  paste(resultsdir, "AREG_ITGA6_PODXL_quantified.pdf", sep = '/'),
+  width = 5,
+  height = 4
+)
+print(VlnPlot(seu_d24,c('AREG','ITGA6','PODXL'),group.by = 'cell_type',log = T))
+print(ggplot(data = percentage_df_long, aes(x=sample, y = value, fill = replica)) + geom_bar(stat = 'identity', position = position_dodge()) +facet_wrap('gene'))
+dev.off()
+```
+
+
+```{r}
+VlnPlot(seu_d24,c('AREG','ITGA6','PODXL'),group.by = 'cell_type',log = T)
+#lets also plot % of cells epxressed:
+
+```
+
+Quantify ITGA6 & AREG
+```{r}
+
+immunostaining_ITGA6_AREG <- read.table('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/immunostaining_percentages/AREG_ITGA6.tsv', header = T)
+
+
+percentage_df <- as.data.frame(do.call(rbind,percentage_list))
+colnames(percentage_df) <-  unlist(percentage_df[1,])
+percentage_df <- percentage_df[-1,]
+```
+
+```{r}
+FeaturePlot(seu, c('PODXL'))
+```
+
+
+
+#SingleR
+```{r}
+hpca.se <- HumanPrimaryCellAtlasData()
+sf_assay <- GetAssay(seu, assay = 'sf')
+sf_mat <- sf_assay[,1:4840]
+
+
+plot_list <- list()
+
+for (label in c('label.fine', 'label.main')) {
+  print(label)
+  
+  predictions <-
+    SingleR(
+      sf_mat,
+      ref = hpca.se,
+      labels = hpca.se[[label]],
+    )
+  
+  predictions_clust <-
+    SingleR(
+      sf_mat,
+      ref = hpca.se,
+      labels = hpca.se[[label]],
+      clusters = seu$seurat_clusters
+    )
+
+  pred_label_df <- as.data.frame(predictions_clust$pruned.labels)
+  pred_label_df$seurat_clusters <- rownames(predictions_clust)
+  
+  seu[[label]] = ""
+  seu[[label]] <- predictions$pruned.labels
+  new_annotation_df <- seu[[label]]
+
+  for (j in unique(pred_label_df$seurat_clusters)) {
+    print(j)
+    cl_type = pred_label_df[pred_label_df$seurat_clusters == j, ]
+    new_annotation_df[seu$seurat_clusters == j,] <- as.character(cl_type$`predictions_clust$pruned.labels`[1])
+  }
+  
+  seu[[label]] <- new_annotation_df
+
+  }
+
+plot1 <- DimPlot(seu, label = TRUE, group.by = 'label.main') + NoLegend()
+plot2 <- DimPlot(seu, label = TRUE, group.by = 'label.fine') + NoLegend()
+
+pdf(
+  paste(resultsdir, "8b.singleR_annotation.pdf", sep = '/'),
+  width = 10,
+  height =6
+)
+print(plot1|plot2)
+dev.off()
+```
+
+scType
+
+```{r}
+circle_annotation_plot <- function(cL_results) {
+  library('ggraph')
+  library('igraph')
+  
+  cL_results_subset <- cL_results#[cL_results$scores >1,]
+  
+  
+  # prepare edges
+  cL_results_subset = cL_results_subset[order(cL_results_subset$cluster),]
+  edges = cL_results_subset
+  edges$type = paste0(edges$type, "_", edges$cluster)
+  edges$cluster = paste0("cluster ", edges$cluster)
+  edges = edges[, c("cluster", "type")]
+  colnames(edges) = c("from", "to")
+  rownames(edges) <- NULL
+  
+  # prepare nodes
+  nodes_lvl1 = sctype_scores[, c("cluster", "ncells")]
+  nodes_lvl1$cluster = paste0("cluster ", nodes_lvl1$cluster)
+  nodes_lvl1$Colour = "#f1f1ef"
+  nodes_lvl1$ord = 1
+  nodes_lvl1$realname = nodes_lvl1$cluster
+  nodes_lvl1 = as.data.frame(nodes_lvl1)
+  nodes_lvl2 = c()
+  
+  ccolss = c(
+    '#FFCCCC',
+    #'PSC'
+    '#CC99CC',
+    #'PSC-like'
+    '#6699CC',
+    #'meso-like-1'
+    '#CCCC99',
+    #'meso-like-2'
+    '#99CC99',
+    #'mesodermal'
+    '#FFCC99',
+    #'early-epi'
+    '#FF9933',
+    #'iLSCs'
+    '#CCCC33'#'iLSCs-diff' =
+    )
+  for (i in 1:length(unique(cL_results_subset$cluster))) {
+    dt_tmp = cL_results_subset[cL_results_subset$cluster == unique(cL_results_subset$cluster)[i], ]
+    nodes_lvl2 = rbind(
+      nodes_lvl2,
+      data.frame(
+        cluster = paste0(dt_tmp$type, "_", dt_tmp$cluster),
+        ncells = dt_tmp$scores,
+        Colour = ccolss[i],
+        ord = 2,
+        realname = dt_tmp$type
+      )
+    )
+  }
+  nodes = rbind(nodes_lvl1, nodes_lvl2)
+  nodes$ncells[nodes$ncells < 1] = 1
+  nodes$ncells = nodes$ncells + 50
+  nodes <- nodes[!duplicated(nodes),]
+
+  
+  mygraph <- graph_from_data_frame(edges, vertices = nodes)
+  
+  # Make the graph
+  gggr <- ggraph(mygraph, layout = 'circlepack', weight = I(ncells)) +
+    geom_node_circle(aes(
+      filter = ord == 1,
+      fill = I("#F5F5F5"),
+      colour = I("#D3D3D3")
+    ), alpha = 0.9) + geom_node_circle(aes(
+      filter = ord == 2,
+      fill = I(Colour),
+      colour = I("#D3D3D3")
+    ), alpha = 0.9) +
+    theme_void() + geom_node_text(
+      aes(
+        filter = ord == 2,
+        label = realname,
+        colour = I("#000000"),
+        fill = "white",
+        repel = !1,
+        parse = T,
+        size = I(log(ncells, 25) * 1.5)
+      )
+    )
+  return(gggr)
+}
+```
+
+
+
+```{r}
+lapply(c('dplyr','Seurat','HGNChelper','openxlsx'), library, character.only = T)
+source('https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R')
+source('https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R')
+source('https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/auto_detect_tissue_type.R')
+db_ = 'https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx'
+download.file(db_, destfile = paste0(resultsdir, '/scTYPE_database.xlsx'))
+
+sctypedb <- readxl::read_excel(paste0(resultsdir, '/scTYPE_database.xlsx'))
+
+#tissue_guess = auto_detect_tissue_type(path_to_db_file = db_, seuratObject = seu, scaled = T, assay = 'sf')
+
+tissue_list = c('Lung','Kidney','Liver','Eye')
+plot_list = list()
+i = 1
+for (tissue in tissue_list){
+  print(tissue)
+  
+  gs_list_sctype = gene_sets_prepare(db_, tissue)
+  
+  es.max = sctype_score(scRNAseqData = seu[['sf']]@scale.data, scaled = TRUE, gs = gs_list_sctype$gs_positive, gs2 = gs_list_sctype$gs_negative)
+  
+  #merge by cluster
+  cL_results = do.call('rbind', lapply(unique(seu$seurat_clusters), function (cl){
+    es.max.cl = sort(rowSums(es.max[,rownames(seu@meta.data[seu@meta.data$seurat_clusters == cl,])]), decreasing = !0)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells= sum(seu@meta.data$seurat_clusters == cl)), 10)
+  }))
+  
+  sctype_scores = cL_results %>% group_by(cluster) %>%  top_n(n=1, wt = scores)
+  sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] = 'Unknown'
+  annotation_name <- paste0("scType_annotation_", tissue)
+  seu[[annotation_name]] = "" 
+  new_annotation_df <- seu[[annotation_name]]
+  
+  for (j in unique(sctype_scores$cluster)){
+    cl_type = sctype_scores[sctype_scores$cluster==j,]
+    new_annotation_df[seu$seurat_clusters == j,] = as.character(cl_type$type[1])
+  }
+ seu[[annotation_name]] <- new_annotation_df
+sctype_scores = cL_results %>% group_by(cluster) %>%  top_n(n=4, wt = scores)
+ plot_list[[i]] <- circle_annotation_plot(sctype_scores)
+ i = i + 1
+}
+
+plot1 <- DimPlot(seu, label = TRUE, group.by = 'scType_annotation_Lung') + NoLegend()
+plot2 <- DimPlot(seu, label = TRUE, group.by = 'scType_annotation_Kidney') + NoLegend()
+plot3 <- DimPlot(seu, label = TRUE, group.by = 'scType_annotation_Liver') + NoLegend()
+plot4 <- DimPlot(seu, label = TRUE, group.by = 'scType_annotation_Eye') + NoLegend()
+
+
+pdf(
+  paste(resultsdir, "8b.scType_annotation.pdf", sep = '/'),
+  width = 20,
+  height =12
+)
+print((plot1|plot2|plot3|plot4)/
+        (plot_list[[1]]|plot_list[[2]]|plot_list[[3]]|plot_list[[4]]) )
+dev.off()
+
+plot_list[[1]]
+```
+#select the various database filter methods
+```{r}
+db_ = 'bio-bigdata.hrbmu.edu.cn/CellMarker/CellMarker_download_files/file/Cell_marker_All.xlsx'
+download.file(db_, destfile = paste0(resultsdir, '/Cellmarker2.0db.xlsx'))
+
+cellMarker2 <- readxl::read_excel(paste0(resultsdir, '/Cellmarker2.0db.xlsx'))
+cellMarker2$Symbol <- toupper(cellMarker2$Symbol) #96074
+cellMarker2 <- cellMarker2[cellMarker2$species=='Human',]#60877
+cellMarker2 <- cellMarker2[cellMarker2$cell_type=='Normal cell',]#48454
+cellMarker2 <- cellMarker2[!is.na(cellMarker2$Symbol),]
+
+```
+
+```{r}
+pdf(
+  paste(resultsdir, "8b.scType_cellmarker2.0.pdf", sep = '/'),
+  width = 6,
+  height =6
+)
+print(DimPlot(seu, reduction = 'umap', label = T, repel = T, group.by = 'CellMarker2_annotation_cornea'))
+dev.off()
+```
+
+
+
+#CellMarker 2.0 database
+```{r}
+#select eye&cornea related stuff
+tissue_of_interest <-
+  cellMarker2$tissue_class == 'Eye' |
+  cellMarker2$tissue_type == 'Eye' |
+  cellMarker2$tissue_type == 'Cornea'
+
+cellMarker <- cellMarker2[tissue_of_interest,]#48454\
+gs_list_marker <- list()
+for (celltype in unique(cellMarker$cell_name)){
+  cellMarker_sub <- cellMarker[cellMarker$cell_name == celltype,]
+  #for (tissue_type in unique(cellMarker_sub$tissue_class)){
+    #gene_symbols <- cellMarker_sub[cellMarker_sub$tissue_class == tissue_type,]$Symbol
+  gene_symbols <- cellMarker_sub$Symbol
+  gene_symbols <- gene_symbols[!is.na(gene_symbols)]
+  if (length(gene_symbols) > 5){
+    gs_list_marker[as.character(celltype)] <- list(gene_symbols)}
+ # }
+}
+#gs_list_marker <- append(gs_list_marker,gs_list_sctype$gs_positive)
+es.max = sctype_score(scRNAseqData = seu[['sf']]@scale.data, scaled = TRUE, gs = gs_list_marker)
+#merge by cluster
+cL_results = do.call('rbind', lapply(unique(seu$seurat_clusters), function (cl){
+  es.max.cl = sort(rowSums(es.max[,rownames(seu@meta.data[seu@meta.data$seurat_clusters == cl,])]), decreasing = !0)
+  head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells= sum(seu@meta.data$seurat_clusters == cl)), 5)
+}))
+sctype_scores = cL_results %>% group_by(cluster) %>%  top_n(n=1, wt = scores)
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/3.5] = 'Unknown'
+seu$CellMarker2_annotation_cornea = "" 
+for (j in unique(sctype_scores$cluster)){
+  cl_type = sctype_scores[sctype_scores$cluster==j,]
+  seu@meta.data$CellMarker2_annotation_cornea[seu$seurat_clusters == j] = as.character(cl_type$type[1])
+}
+sctype_scores = cL_results %>% group_by(cluster) %>%  top_n(n=4, wt = scores)
+plot1 <- circle_annotation_plot(sctype_scores)
+plot2 <- DimPlot(seu, reduction = 'umap', label = T, repel = T, group.by = 'CellMarker2_annotation_cornea')  + NoLegend()
+
+cellMarker <- cellMarker2
+gs_list_marker <- list()
+for (celltype in unique(cellMarker$cell_name)){
+  cellMarker_sub <- cellMarker[cellMarker$cell_name == celltype,]
+  #for (tissue_type in unique(cellMarker_sub$tissue_class)){
+    #gene_symbols <- cellMarker_sub[cellMarker_sub$tissue_class == tissue_type,]$Symbol
+  gene_symbols <- cellMarker_sub$Symbol
+  gene_symbols <- gene_symbols[!is.na(gene_symbols)]
+  if (length(gene_symbols) > 5){
+    gs_list_marker[as.character(celltype)] <- list(gene_symbols)}
+ # }
+}
+#gs_list_marker <- append(gs_list_marker,gs_list_sctype$gs_positive)
+es.max = sctype_score(scRNAseqData = seu[['sf']]@scale.data, scaled = TRUE, gs = gs_list_marker)
+#merge by cluster
+cL_results = do.call('rbind', lapply(unique(seu$seurat_clusters), function (cl){
+  es.max.cl = sort(rowSums(es.max[,rownames(seu@meta.data[seu@meta.data$seurat_clusters == cl,])]), decreasing = !0)
+  head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells= sum(seu@meta.data$seurat_clusters == cl)), 5)
+}))
+sctype_scores = cL_results %>% group_by(cluster) %>%  top_n(n=1, wt = scores)
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/3.5] = 'Unknown'
+seu$CellMarker2_annotation_all = "" 
+for (j in unique(sctype_scores$cluster)){
+  cl_type = sctype_scores[sctype_scores$cluster==j,]
+  seu@meta.data$CellMarker2_annotation_all[seu$seurat_clusters == j] = as.character(cl_type$type[1])
+}
+sctype_scores = cL_results %>% group_by(cluster) %>%  top_n(n=4, wt = scores)
+plot3 <- circle_annotation_plot(sctype_scores)
+plot4 <- DimPlot(seu, reduction = 'umap', label = T, repel = T, group.by = 'CellMarker2_annotation_all')  + NoLegend()
+
+
+
+
+pdf(
+  paste(resultsdir, "8b.scType_cellmarker2.0.pdf", sep = '/'),
+  width = 15,
+  height =12
+)
+print((plot2 |plot4)/(plot1|plot3))
+dev.off()
+
+```
+
+```{r}
+circle_annotation_plot <- function(cL_results) {
+  library('ggraph')
+  library('igraph')
+  
+  cL_results_subset <- cL_results#[cL_results$scores >1,]
+  
+  
+  # prepare edges
+  cL_results_subset = cL_results_subset[order(cL_results_subset$cluster),]
+  edges = cL_results_subset
+  edges$type = paste0(edges$type, "_", edges$cluster)
+  edges$cluster = paste0("cluster ", edges$cluster)
+  edges = edges[, c("cluster", "type")]
+  colnames(edges) = c("from", "to")
+  rownames(edges) <- NULL
+  
+  # prepare nodes
+  nodes_lvl1 = sctype_scores[, c("cluster", "ncells")]
+  nodes_lvl1$cluster = paste0("cluster ", nodes_lvl1$cluster)
+  nodes_lvl1$Colour = "#f1f1ef"
+  nodes_lvl1$ord = 1
+  nodes_lvl1$realname = nodes_lvl1$cluster
+  nodes_lvl1 = as.data.frame(nodes_lvl1)
+  nodes_lvl2 = c()
+  
+  ccolss = c(
+    '#FFCCCC',
+    #'PSC'
+    '#CC99CC',
+    #'PSC-like'
+    '#6699CC',
+    #'meso-like-1'
+    '#CCCC99',
+    #'meso-like-2'
+    '#99CC99',
+    #'mesodermal'
+    '#FFCC99',
+    #'early-epi'
+    '#FF9933',
+    #'iLSCs'
+    '#CCCC33'#'iLSCs-diff' =
+    )
+  for (i in 1:length(unique(cL_results_subset$cluster))) {
+    dt_tmp = cL_results_subset[cL_results_subset$cluster == unique(cL_results_subset$cluster)[i], ]
+    nodes_lvl2 = rbind(
+      nodes_lvl2,
+      data.frame(
+        cluster = paste0(dt_tmp$type, "_", dt_tmp$cluster),
+        ncells = dt_tmp$scores,
+        Colour = ccolss[i],
+        ord = 2,
+        realname = dt_tmp$type
+      )
+    )
+  }
+  nodes = rbind(nodes_lvl1, nodes_lvl2)
+  nodes$ncells[nodes$ncells < 1] = 1
+  nodes$ncells = nodes$ncells + 50
+  
+  
+  mygraph <- graph_from_data_frame(edges, vertices = nodes)
+  
+  # Make the graph
+  gggr <- ggraph(mygraph, layout = 'circlepack', weight = I(ncells)) +
+    geom_node_circle(aes(
+      filter = ord == 1,
+      fill = I("#F5F5F5"),
+      colour = I("#D3D3D3")
+    ), alpha = 0.9) + geom_node_circle(aes(
+      filter = ord == 2,
+      fill = I(Colour),
+      colour = I("#D3D3D3")
+    ), alpha = 0.9) +
+    theme_void() + geom_node_text(
+      aes(
+        filter = ord == 2,
+        label = realname,
+        colour = I("#000000"),
+        fill = "white",
+        repel = !1,
+        parse = T,
+        size = I(log(ncells, 25) * 1.5)
+      )
+    )
+  return(gggr)
+}
+```
+
+
+```{r}
+library('ggraph')
+library('igraph')
+
+cL_results_subset <- cL_results#[cL_results$scores >1,]
+
+
+# prepare edges
+cL_results_subset = cL_results_subset[order(cL_results_subset$cluster), ]
+edges = cL_results_subset
+edges$type = paste0(edges$type, "_", edges$cluster)
+edges$cluster = paste0("cluster ", edges$cluster)
+edges = edges[, c("cluster", "type")]
+colnames(edges) = c("from", "to")
+rownames(edges) <- NULL
+
+# prepare nodes
+nodes_lvl1 = sctype_scores[, c("cluster", "ncells")]
+nodes_lvl1$cluster = paste0("cluster ", nodes_lvl1$cluster)
+nodes_lvl1$Colour = "#f1f1ef"
+nodes_lvl1$ord = 1
+nodes_lvl1$realname = nodes_lvl1$cluster
+nodes_lvl1 = as.data.frame(nodes_lvl1)
+nodes_lvl2 = c()
+
+ccolss = c(
+    '#FFCCCC',#'PSC' 
+    '#CC99CC',#'PSC-like' 
+    '#6699CC',#'meso-like-1' 
+    '#CCCC99',#'meso-like-2' 
+    '#99CC99',#'mesodermal'
+    '#FFCC99',#'early-epi' 
+    '#FF9933',#'iLSCs' 
+    '#CCCC33'#'iLSCs-diff' = 
+)
+for (i in 1:length(unique(cL_results_subset$cluster))) {
+  dt_tmp = cL_results_subset[cL_results_subset$cluster == unique(cL_results_subset$cluster)[i],]
+  nodes_lvl2 = rbind(
+    nodes_lvl2,
+    data.frame(
+      cluster = paste0(dt_tmp$type, "_", dt_tmp$cluster),
+      ncells = dt_tmp$scores,
+      Colour = ccolss[i],
+      ord = 2,
+      realname = dt_tmp$type
+    )
+  )
+}
+nodes = rbind(nodes_lvl1, nodes_lvl2)
+nodes$ncells[nodes$ncells < 1] = 1
+nodes$ncells = nodes$ncells +50
+nodes <- nodes[!duplicated(nodes),]
+
+mygraph <- graph_from_data_frame(edges, vertices = nodes)
+
+# Make the graph
+gggr <- ggraph(mygraph, layout = 'circlepack', weight = I(ncells)) +
+  geom_node_circle(aes(
+    filter = ord == 1,
+    fill = I("#F5F5F5"),
+    colour = I("#D3D3D3")
+  ), alpha = 0.9) + geom_node_circle(aes(
+    filter = ord == 2,
+    fill = I(Colour),
+    colour = I("#D3D3D3")
+  ), alpha = 0.9) +
+  theme_void() + geom_node_text(
+    aes(
+      filter = ord == 2,
+      label = realname,
+      colour = I("#000000"),
+      fill = "white",
+      repel = !1,
+      parse = T,
+      size = I(log(ncells, 25) * 1.5) 
+    ))
+  # ) + geom_node_label(
+  #   aes(
+  #     filter = ord == 1,
+  #     label = realname,
+  #     colour = I("#000000"),
+  #     size = I(3),
+  #     fill = "white",
+  #     parse = T
+  #   ),
+  #   repel = !0,
+  #   segment.linetype = "dotted"
+  # )
+
+
+pdf(
+  paste(resultsdir, "8b.extensive_annotation.pdf", sep = '/'),
+  width = 14,
+  height = 5
+)
+scater::multiplot(DimPlot(
+  seu,
+  reduction = "umap",
+  label = TRUE,
+  group.by = 'CellMarker2_annotation_cornea',
+  repel = TRUE,
+),
+gggr,
+cols = 2)
+dev.off()
+
+seu
+
+print(gggr)
+```
+
+## FIGURE 1
+```{r}
+#1B
+
+plot_timepoints_umap <- DimPlot(
+  seu,
+  label = TRUE,
+  group.by = 'timepoint',
+  cols = c(
+    'd0' = '#CCCCCC',
+    'd11' = '#999999',
+    'd24' = '#333333'
+  )
+)
+
+pdf(
+  paste(resultsdir, "figure1B.pdf", sep = '/'),
+  width = 6,
+  height = 5
+)
+print(plot_timepoints_umap)
+dev.off()
+
+```
+
+#Fig genes over time
+```{r}
+Idents(seu) <- "timepoint"
+marker_gene_list <-
+  c(
+    'POU5F1',
+    'NANOG',
+    'CD200',
+    'ABCG2',
+    'TP63',
+    'KRT14'
+  )
+pdf(
+  paste(resultsdir, "Fig_1_genes.pdf", sep = '/'),
+  width = 4,
+  height = 6
+)
+print(VlnPlot(
+  seu,
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T,
+  fill.by = 'ident',
+  cols = c('#CCCCCC','#999999','#333333'
+)))
+dev.off()
+print(VlnPlot(
+  seu,
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T,
+  fill.by = 'ident',
+  cols = c('#CCCCCC','#999999','#333333'
+)))
+```
+
+bar graphs over time
+```{r}
+Idents(seu) <- "timepoint"
+pdf(
+  paste(resultsdir, "cell_line_timepoint_percentages.pdf", sep = '/'),
+  width = 6,
+  height = 5
+)
+
+for (celltype in unique(seu$cell_type)){
+  seu_sub <- seu[,seu$cell_type == celltype]
+  p1 <- ggplot(seu_sub@meta.data, aes(factor(timepoint, 
+    rev(levels(x = seu_sub@active.ident))
+  ), fill = forcats::fct_rev(seurat_clusters))) + geom_bar(position = 'fill', stat =
+                                            "count") + theme(
+                                              legend.position = 'bottom',
+                                              legend.box = 'horizontal',
+                                              axis.title.x = element_blank(),
+                                              axis.title.y = element_blank(),
+                                              axis.text.x = element_text(angle = 90),
+                                              panel.background = element_blank()
+                                            ) +
+    guides(fill = guide_legend(
+      nrow =
+        3,
+      byrow = T,
+      title.position = 'top'
+    )) +
+    scale_y_continuous(labels = scales::percent) + coord_flip() + scale_fill_manual(values = c(
+      'PSC'= '#FFCCCC',
+      'PSC-like' ='#CC99CC',
+      'meso_like-3'='#6699CC',
+      'meso-like-2'='#CCCC99',
+      'meso-like-1'='#99CC99',
+      'early-epi'='#FFCC99',
+      'iLSCs1'='#FF9933',
+      'iLSCs2'='#CCCC33'
+    ))
+  
+  p3 <-
+    ggplot(seu_sub@meta.data[order(seu_sub@meta.data$Phase),], aes(factor(timepoint, rev(
+      levels(x = seu_sub@active.ident)
+    )), fill = Phase)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'vertical',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.y = element_blank(),
+                                      axis.ticks.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+    guides(fill = guide_legend(
+      nrow = 3,
+      byrow = T,
+      title.position = 'top'
+    )) +
+    scale_y_continuous(labels = scales::percent) + coord_flip()
+  
+  print(p1 + p3 + patchwork::plot_annotation(title = paste0('cell line ', celltype), 
+                                             theme = theme(plot.title = element_text(size = 16))))
+
+}
+dev.off()
+
+
+for (celltype in unique(seu$cell_type)){
+  seu_sub <- seu[,seu$cell_type == celltype]
+  seu_sub_sub <- seu_sub[,seu_sub$timepoint == 'd24']
+  print(celltype)
+  print(prop.table(table(seu_sub_sub$seurat_clusters))*100  )
+}
+
+
+print(p1 + p3 + patchwork::plot_annotation(title = paste0('cell line ', celltype)))
+seu_sub_sub <- seu_sub[,seu_sub$timepoint == 'd24']
+prop.table(table(seu_sub_sub$seurat_clusters))*100                       
+```
+
+
+```{r}
+Idents(seu) <- "seurat_clusters"
+
+p1 <- ggplot(seu@meta.data, aes(factor(seurat_clusters, rev(
+  levels(x = seu@active.ident)
+)), fill = timepoint)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'horizontal',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+  guides(fill = guide_legend(
+    nrow =
+      3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + coord_flip() + scale_fill_manual(values = c(
+    'd0' = '#CCCCCC',
+    'd11' = '#999999',
+    'd24' = '#333333'
+  ))
+#scale_fill_brewer(palette = "Set2") +
+
+
+p2 <- ggplot(seu@meta.data, aes(factor(seurat_clusters, rev(
+  levels(x = seu@active.ident)
+)), fill = cell_type)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'vertical',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.y = element_blank(),
+                                      axis.ticks.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+  guides(fill = guide_legend(
+    nrow =
+      3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette =
+                                                                     "Dark2") + coord_flip()
+
+p3 <-
+  ggplot(seu@meta.data[order(seu@meta.data$Phase),], aes(factor(seurat_clusters, rev(
+    levels(x = seu@active.ident)
+  )), fill = Phase)) + geom_bar(position = 'fill', stat =
+                                  "count") + theme(
+                                    legend.position = 'bottom',
+                                    legend.box = 'vertical',
+                                    axis.title.x = element_blank(),
+                                    axis.title.y = element_blank(),
+                                    axis.text.y = element_blank(),
+                                    axis.ticks.y = element_blank(),
+                                    axis.text.x = element_text(angle = 90),
+                                    panel.background = element_blank()
+                                  ) +
+  guides(fill = guide_legend(
+    nrow = 3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + coord_flip()
+print(p1 | p2 | p3)
+
+
+```
+
+
+```{r}
+#1D
+plot_clusters_umap <- DimPlot(
+  seu,
+  label = TRUE,
+  group.by = 'seurat_clusters',
+  cols = c(
+    '#FFCCCC',#'PSC' 
+    '#CC99CC',#'PSC-like' 
+    '#6699CC',#'meso-like-1' 
+    '#CCCC99',#'meso-like-2' 
+    '#99CC99',#'mesodermal'
+    '#FFCC99',#'early-epi' 
+    '#FF9933',#'iLSCs' 
+    '#CCCC33'#'iLSCs-diff' = 
+  )
+)
+
+pdf(
+  paste(resultsdir, "figure1D.pdf", sep = '/'),
+  width = 6,
+  height = 5
+)
+print(plot_clusters_umap)
+dev.off()
+
+
+```
+
+
+
+
+```{r}
+Idents(seu) <- "seurat_clusters"
+
+#seu <- BuildClusterTree(seu, features = row.names(seu))
+seu <- BuildClusterTree(seu)
+# pull the tree
+data.tree <- Tool(object = seu, slot = "BuildClusterTree")
+# plot the tree
+p <- ggtree(data.tree)
+
+pdf(
+  paste(resultsdir, "8b.clustering_costum_tree.pdf", sep = '/'),
+  width = 3,
+  height = 5
+)
+print(p  + geom_tiplab(
+  align = TRUE,
+  size = 12,
+  as_ylab = T
+) + geom_text(aes(label = node)))
+#print(p)
+print(p)#%>% flip(13,14)%>% flip(1,4)%>% flip(6,15)%>% flip(2,7)+ geom_tiplab(align=TRUE, size =12, as_ylab = T)+ geom_text(aes(label=node)))
+dev.off()
+
+
+p1 <-
+  DimPlot(seu, label = TRUE,) + NoLegend() + ggtitle("Louvain Clustering")
+p2 <-
+  DimPlot(seu,
+          label = TRUE,
+          group.by = 'timepoint',
+          cols = 'Set2') + NoLegend()
+p3 <-
+  DimPlot(seu,
+          label = F,
+          group.by = 'cell_type',
+          cols = 'Dark2') + NoLegend()
+p4 <- p + geom_tiplab(align = TRUE,
+                      size = 12,
+                      as_ylab = T)
+#p4 <- p %>% flip(13,14) %>% flip(5,1) %>% flip(8,15) %>% flip(16,17) %>% flip(9,2) + geom_tiplab(align=TRUE, size =12, as_ylab = T) #+ geom_text(aes(label=node))
+p9 <-
+  DimPlot(seu,
+          label = TRUE,
+          group.by = 'sf_snn_res.0.3',
+          cols = 'Set2') + NoLegend()
+# p10 <- p_clus + geom_tiplab(align = TRUE,
+#                             size = 12,
+#                             as_ylab = T)
+
+#umap cell timp
+p5 <-
+  ggplot(seu@meta.data, aes(seurat_clusters, fill = timepoint)) + geom_bar(position = 'fill', stat =
+                                                                             "count") + theme(axis.text.x = element_text(angle = 90)) + scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette =
+                                                                                                                                                                                                           "Set2")
+p6 <-
+  ggplot(seu@meta.data, aes(seurat_clusters, fill = cell_type)) + geom_bar(position = 'fill', stat =
+                                                                             "count") + theme(axis.text.x = element_text(angle = 90)) + scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette =
+                                                                                                                                                                                                           "Dark2")
+
+#umap cell cycle
+p7 <- DimPlot(seu, group.by = 'Phase')
+p8 <-
+  ggplot(seu@meta.data, aes(seurat_clusters, fill = Phase)) + geom_bar(position = 'fill', stat =
+                                                                         "count") + theme(axis.text.x = element_text(angle = 90)) + scale_y_continuous(labels = scales::percent)
+pdf(
+  paste(resultsdir, "8b.clustering_costum.pdf", sep = '/'),
+  width = 10,
+  height = 20
+)
+#print(multiplot(p9, p1, p2, p3, p7, p10, p4, p5, p6, p8, ncol = 2))
+print(multiplot(p1, p2, p3, p7, p4, p5, p6, p8, ncol = 2))
+
+dev.off()
+
+#Idents(seu) <- "costum_clustering"
+
+# cluster re-assignment occurs, which re-assigns clustering in my_levels (assuming you have 12 clusters in total)
+#my_levels <- c(7, 6, 4, 3, 1, 2, 5, 10, 8, 0, 9, 11, 12)
+
+```
+Lets generate tilted stacked barcharts
+```{r}
+p1 <- ggplot(seu@meta.data, aes(factor(seurat_clusters, rev(
+  levels(x = seu@active.ident)
+)), fill = timepoint)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'horizontal',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+  guides(fill = guide_legend(
+    nrow =
+      3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + coord_flip() + scale_fill_manual(values = c(
+    'd0' = '#CCCCCC',
+    'd11' = '#999999',
+    'd24' = '#333333'
+  ))
+#scale_fill_brewer(palette = "Set2") +
+
+
+p2 <- ggplot(seu@meta.data, aes(factor(seurat_clusters, rev(
+  levels(x = seu@active.ident)
+)), fill = cell_type)) + geom_bar(position = 'fill', stat =
+                                    "count") + theme(
+                                      legend.position = 'bottom',
+                                      legend.box = 'vertical',
+                                      axis.title.x = element_blank(),
+                                      axis.title.y = element_blank(),
+                                      axis.text.y = element_blank(),
+                                      axis.ticks.y = element_blank(),
+                                      axis.text.x = element_text(angle = 90),
+                                      panel.background = element_blank()
+                                    ) +
+  guides(fill = guide_legend(
+    nrow =
+      3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette =
+                                                                     "Dark2") + coord_flip()
+
+p3 <-
+  ggplot(seu@meta.data[order(seu@meta.data$Phase), ], aes(factor(seurat_clusters, rev(
+    levels(x = seu@active.ident)
+  )), fill = Phase)) + geom_bar(position = 'fill', stat =
+                                  "count") + theme(
+                                    legend.position = 'bottom',
+                                    legend.box = 'vertical',
+                                    axis.title.x = element_blank(),
+                                    axis.title.y = element_blank(),
+                                    axis.text.y = element_blank(),
+                                    axis.ticks.y = element_blank(),
+                                    axis.text.x = element_text(angle = 90),
+                                    panel.background = element_blank()
+                                  ) +
+  guides(fill = guide_legend(
+    nrow = 3,
+    byrow = T,
+    title.position = 'top'
+  )) +
+  scale_y_continuous(labels = scales::percent) + coord_flip()
+pdf(
+  paste(resultsdir, "Fig2_horizontal_bars.pdf", sep = '/'),
+  width = 5,
+  height = 5
+)
+print(p1 | p2 | p3)
+dev.off()
+
+```
+
+
+
+
+Lets vizualzie the percentage of cell clusters per timepoint
+```{r}
+pdf(
+  paste(
+    resultsdir,
+    "8b.clustering_costum_cluster_percentage.pdf",
+    sep = '/'
+  ),
+  width = 10,
+  height = 15
+)
+p1 <- DimPlot(seu, label = TRUE,) + ggtitle("Louvain Clustering")
+p2 <-
+  DimPlot(seu,
+          label = TRUE,
+          group.by = 'timepoint',
+          cols = 'Set2')
+p3 <-
+  DimPlot(seu,
+          label = TRUE,
+          group.by = 'cell_type',
+          cols = 'Dark2')
+p5 <-
+  ggplot(seu@meta.data, aes(timepoint, fill = seurat_clusters)) + geom_bar(position = 'fill', stat =
+                                                                             "count") + theme(axis.text.x = element_text(angle = 90)) + scale_y_continuous(labels = scales::percent)
+
+print(multiplot(p1, p2, p3, p5, ncol = 2))
+dev.off()
+```
+
+Figure 1E
+```{r}
+marker_plot <- VlnPlot(
+  seu,
+  fill.by = 'ident',
+  col = c(
+    '#FFCCCC',
+    '#CC99CC',
+    '#6699CC',
+    '#CCCC99',
+    '#99CC99',
+    '#FFCC99',
+    '#FF9933',
+    '#CCCC33'),
+  features = marker_gene_list,
+  stack = TRUE,
+  flip = T
+)+theme(legend.position = 'none')
+
+pdf(
+  paste(resultsdir, "figure1E.pdf", sep = '/'),
+  width = 3,
+  height = 5
+)
+print(marker_plot)
+dev.off()
+```
+
+
+
+
+output variable genes for scATAC label transfer
+```{r}
+variable_genes <- seu@assays$sf@var.features
+write.table(
+  variable_genes,
+  file = paste0(workdir, "variable_genes.tsv"),
+  quote = FALSE,
+  sep = '\t',
+  col.names = F,
+  row.names = F
+)
+```
+
+Lets vizualize marker genes
+```{r}
+
+
+DefaultAssay(object = seu) <- "sf"
+Idents(seu) <- "seurat_clusters"
+
+pdf(
+  paste(resultsdir, "9b_marker_genes.pdf", sep = '/'),
+  width = 20,
+  height = 20
+)
+print(VlnPlot(seu, features = marker_gene_list, assay = 'sf'))
+#VlnPlot(seu, features = marker_gene_list, assay = 'sf_SAVER')
+print(DotPlot(seu, features = marker_gene_list) + RotatedAxis())
+print(print(FeaturePlot(seu, features = marker_gene_list)))
+dev.off()
+```
+Immunoflorescene list
+```{r}
+PSC_markers <- c('LIN28A', 'POU5F1', 'NANOG', 'PODXL')
+iLSC_diff_markers <- c('MUC16')
+iLSC_markers <- c('KRT14','AREG','ITGA6')
+early_epi_markers <- c('ABCG2', 'TP63')
+mesodermal_markers <- c('HAND1', 'LUM')
+meso_like_1_markers <- c('GATA4')
+meso_like_2_markers <- c('COL8A1', 'ZEB2')
+
+fluorescent_markers <-
+  list(
+    PSC_markers,
+    meso_like_1_markers,
+    meso_like_2_markers,
+    mesodermal_markers,
+    early_epi_markers,
+    iLSC_markers,
+    iLSC_diff_markers
+  )
+
+pdf(
+  paste(resultsdir, "immunostaining_genes.pdf", sep = '/'),
+  width = 3,
+  height = 3
+)
+
+for (cluster in fluorescent_markers) {
+  if (length(cluster) > 1) {
+    p <- VlnPlot(
+      seu,
+      fill.by = 'ident',
+      col = c(
+        '#FFCCCC',
+        '#CC99CC',
+        '#6699CC',
+        '#CCCC99',
+        '#99CC99',
+        '#FFCC99',
+        '#FF9933',
+        '#CCCC33'
+      ),
+      assay = 'sf',
+      combine = T,
+      features = cluster,
+      stack = T,
+      flip = T,
+    ) + theme(
+      legend.position = 'none',
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      #axis.text.y = element_blank(),
+      #axis.ticks.y = element_blank(),
+      axis.text.x = element_text(angle = 90),
+      panel.background = element_blank()
+    )
+    print(p)
+  } else{
+    p <- VlnPlot(
+      seu,
+      fill.by = 'ident',
+      col = c(
+        '#FFCCCC',
+        '#CC99CC',
+        '#6699CC',
+        '#CCCC99',
+        '#99CC99',
+        '#FFCC99',
+        '#FF9933',
+        '#CCCC33'
+      ),
+      assay = 'sf',
+      combine = T,
+      feature = cluster
+    ) + theme(
+      legend.position = 'none',
+      axis.title.y = element_blank(),
+      
+      axis.title.x = element_blank(),
+      #axis.text.y = element_blank(),
+      #axis.ticks.y = element_blank(),
+      axis.text.x = element_text(angle = 90),
+      panel.background = element_blank()
+    )
+    print(p)
+  }
+}
+dev.off()
+
+```
+
+```{r}
+
+PrctCellExpringGene <- function(object, genes, group.by = "all"){
+    if(group.by == "all"){
+        prct = unlist(lapply(genes,calc_helper, object=object))
+        result = data.frame(Markers = genes, Cell_proportion = prct)
+        return(result)
+    }
+
+    else{        
+        list = SplitObject(object, group.by)
+        factors = names(list)
+
+        results = lapply(list, PrctCellExpringGene, genes=genes)
+        for(i in 1:length(factors)){
+        results[[i]]$Feature = factors[i]
+        }
+        combined = do.call("rbind", results)
+        return(combined)
+    }
+}
+
+calc_helper <- function(object,genes){
+    counts = object[['sf']]@counts
+    ncells = ncol(counts)
+    if(genes %in% row.names(counts)){
+    sum(counts[genes,]>0)/ncells
+    }else{return(NA)}
+}
+# 
+# seu_iLSCs <- seu[,seu$seurat_clusters == 'iLSCs']
+# counts = seu_iLSCs[['sf']]@counts
+# ncells = ncol(counts)
+# sum(counts['PAX6',]>0 & counts['KRT14',]==0)
+# sum(counts['PAX6',])/ncells
+# sum(counts['TP63',])
+# 
+# sum(counts['PAX6',]>0 & counts['KRT14',]==0)/ncells
+
+
+```
+
+
+```{r}
+FeaturePlot(seu, 'NANOG', order = T)
+PrctCellExpringGene(seu, c('TP63','PAX6'), group.by= 'seurat_clusters')
+
+pdf(
+  paste(resultsdir, "11_PAX6_KRT14.pdf", sep = '/'),
+  width = 20,
+  height = 5
+)
+print(FeaturePlot(
+  seu,
+  c('PAX6', 'KRT14'),
+  blend = T,
+  blend.threshold = 0.8,
+  order = T,
+  combine = T,
+  label = T
+))
+dev.off()
+```
+
+
+
+
+Lets find marker genes for each cluster
+```{r}
+marker_gene_file <- paste0(workdir, 'LSC_Marker_Genes.csv')
+if (file.exists(marker_gene_file)) {
+  print('DEG  file exists, loading and using it')
+  cluster_markers <- as.data.frame(read_csv(marker_gene_file, show_col_types = FALSE), delimiter = ',')
+  rownames(cluster_markers) <- cluster_markers$...1
+  cluster_markers$...1 <- NULL
+} else {
+  cluster_markers <- FindAllMarkers(seu, only.pos = FALSE)
+  cluster_markers['direction'] <- 'down'
+  cluster_markers[cluster_markers$avg_log2FC > 0, ]$direction <-
+    'up'
+  write.csv(cluster_markers, marker_gene_file, sep = ',')
+}
+cluster_markers_up <-
+  cluster_markers[cluster_markers$direction == 'up', ]
+cluster_DEGS <-
+  as.data.frame(cluster_markers[c('cluster',
+                                  'direction',
+                                  'p_val',
+                                  'avg_log2FC',
+                                  'pct.1',
+                                  'pct.2',
+                                  'gene')], stringsAsFactors = F)
+cluster_DEGS <-
+  cluster_DEGS[(cluster_DEGS$avg_log2FC > 0.5 |
+                  cluster_DEGS$avg_log2FC < -0.5), ]
+```
+output DEGS for scATAC label transfer
+```{r}
+write.table(
+  cluster_DEGS$gene,
+  file = paste0(workdir, "DEG_genes.tsv"),
+  quote = FALSE,
+  sep = '\t',
+  col.names = F,
+  row.names = F
+)
+```
+
+Lets also specifically compare IPSC with IPSC-like cells
+```{r}
+markers_PSC_like <-
+  FindMarkers(seu,
+              only.pos = FALSE,
+              ident.1 = 'PSC',
+              ident.2 = 'PSC-like')
+write.table(
+  markers_PSC_like,
+  file = paste0(workdir, "PSClike_DEG_genes.tsv"),
+  quote = FALSE,
+  sep = '\t',
+  col.names = T,
+  row.names = T
+)
+```
+
+check for marker genes usefull for cell surface FACS screening
+```{r}
+#lets use the genes associated with the GO term GO:0009986 ( cell surface )
+cell_surface_genes <-
+  read.table(
+    '/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/QuickGO-annotations-1668182743369-20221111.tsv',
+    sep = '\t',
+    header = T
+  )
+
+markers_PSC_like$gene <- rownames(markers_PSC_like)
+
+surface_markers_PSClike <-
+  merge(markers_PSC_like,
+        cell_surface_genes,
+        by.x = 'gene',
+        by.y = 'SYMBOL')
+surface_markers_PSClike <-
+  surface_markers_PSClike[order(surface_markers_PSClike$avg_log2FC, decreasing = F), ]
+surface_markers_PSClike <-
+  surface_markers_PSClike %>% distinct(gene, .keep_all = TRUE)
+surface_markers_PSClike <-
+  surface_markers_PSClike[order(surface_markers_PSClike$avg_log2FC, decreasing = F), ]
+write.table(
+  surface_markers_PSClike,
+  paste(resultsdir, "surface_markers_PSC_like.csv", sep = '/'),
+  sep = ',',
+  row.names = F
+)
+```
+
+#ITG6 & AREG
+```{r}
+pdf(
+  paste(resultsdir, "11_AREG_ITGA6.pdf", sep = '/'),
+  width = 20,
+  height = 5
+)
+print(FeaturePlot(
+  seu,
+  c('AREG', 'ITGA6'),
+  blend = T,
+  blend.threshold = 0.8,
+  order = T,
+  combine = T,
+  label = T
+))
+dev.off()
+```
+
+
+#lets add the top10 of each cluster their marker genes to a file to vizualize
+```{r}
+cluster_markers_top = list()
+pdf(
+  paste(resultsdir, "9c_clustermarkers.pdf", sep = '/'),
+  width = 20,
+  height = 20
+)
+DimPlot(seu,
+        label = TRUE,
+        group.by = 'timepoint',
+        cols = 'Set2')
+DimPlot(seu, label = TRUE,) + ggtitle("Louvain Clustering")
+
+for (cluster in unique(cluster_markers_up$cluster)) {
+  print(cluster)
+  deg_subset <-
+    cluster_markers_up[cluster_markers_up$cluster == cluster, ]
+  
+  #print(deg_subset)
+  cluster_genes <- head(deg_subset, 12)
+  cluster_markers_top[cluster] = list(cluster_genes$gene)
+  print(FeaturePlot(seu, features = cluster_genes$gene))
+}
+dev.off()
+cluster_markers_top = t(as.data.frame(cluster_markers_top))
+
+write.table(
+  cluster_markers_top,
+  paste0(resultsdir, "/top_markers.csv"),
+  col.names = F,
+  sep = ","
+)
+
+```
+```{r}
+cluster_markers_renamed <- cluster_markers
+cluster_markers_renamed$cluster<- gsub("^PSC-like", "2_PSC-like", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^PSC", "1_PSC", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^meso-like-1", "3_meso-like1", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^meso-like-2", "4_meso-like2", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^mesodermal", "5_mesodermal", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^early-epi", "6_early-epi", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^iLSCs", "7_iLSCs", cluster_markers_renamed$cluster)
+cluster_markers_renamed$cluster<- gsub("^iLSCs-diff", "8_iLSCs-diff", cluster_markers_renamed$cluster)
+
+cluster_DEGS <-
+  as.data.frame(cluster_markers_renamed[c('cluster',
+                                  'direction',
+                                  'p_val',
+                                  'avg_log2FC',
+                                  'pct.1',
+                                  'pct.2',
+                                  'gene')], stringsAsFactors = F)
+```
+
+
+#lets run GO enrichment
+```{r}
+rds_file <- paste0(workdir, 'seu_GO.rds')
+rds_simple_file <- paste0(workdir, 'seu_simplified_GO.rds')
+
+if (file.exists(rds_file)) {
+  print('GO ernich file exists, loading and using it')
+  formula_res <- readRDS(rds_file)
+  print('GO ernich file exists, loading and using it')
+  formula_res_simp <- readRDS(rds_simple_file)
+
+} else{
+  print('no GO enrich file found, generating one (go grab a coffee or two)')
+  
+  formula_res <-
+    compareCluster(
+      gene ~ direction + cluster,
+      data = cluster_DEGS,
+      fun = "enrichGO",
+      OrgDb = org.Hs.eg.db,
+      keyType = "SYMBOL",
+      ont = "BP",
+      qvalueCutoff = 0.01
+    )
+  
+  
+  formula_res_simp <- clusterProfiler::simplify(formula_res, cutoff = 0.6)
+  fGO_enrichmnent_table <- as.data.frame(formula_res)
+  write.table(GO_enrichmnent_table,
+              paste(resultsdir, "10a_GO-enrichment.csv", sep = '/'),
+              sep = ',')
+  saveRDS(formula_res, file = rds_file)
+  saveRDS(formula_res_simp, file=rds_simple_file)
+  
+  GOenrichment_plot_scrna_JS(
+    formula_res,
+    paste(resultsdir, "10a_GO-enrichment.pdf", sep = '/'),
+    2,
+    12,
+    cluster_DEGS,
+    seu,
+    plot_width = 15,
+    plot_height = 10
+  )
+  pdf(
+    paste0(resultsdir, '/10.GOJO.pdf') ,
+    width = 16,
+    height = 20,
+    paper = 'special'
+  )
+  #dotplot(formula_res,showCategory = 6, color = 'qvalue')
+  print(dotplot(formula_res, x = "cluster", showCategory = 4) + facet_grid( ~
+                                                                              direction)) + scale_colour_gradient2(
+                                                                                low = "red",
+                                                                                high = "white",
+                                                                                space = "rgb",
+                                                                                na.value = "grey50",
+                                                                                guide = "colourbar",
+                                                                                trans = log2_trans()
+                                                                              )
+  print(dotplot(formula_res, x = "cluster", showCategory = 4) + facet_grid( ~
+                                                                              direction)) + scale_colour_gradient2(
+                                                                                low = "blue",
+                                                                                high = "white",
+                                                                                space = "rgb",
+                                                                                na.value = "grey50",
+                                                                                guide = "colourbar",
+                                                                                trans = log2_trans()
+                                                                              )
+  
+  
+  dev.off()
+  
+}
+
+dotplot(formula_res, color = 'qvalue')
+```
+
+make my own dotplot, but better
+```{r}
+set.seed('123')
+#select IDs based on the simplified GO-object
+df <-as.data.frame(formula_res_simp) 
+df$clustdir <- paste0(df$cluster,'-',df$direction)
+selected_IDs <- list()
+
+
+for (cluster_dir in unique(df$clustdir)){
+  print(cluster_dir)
+  df_subset <- df[df$clustdir == cluster_dir,]
+  selected_IDs <- append(selected_IDs,(head(df_subset$ID, 4)))
+}
+df <-as.data.frame(formula_res) 
+df_subset <- df[df$ID %in% selected_IDs,]
+
+df_subset <- df_subset[c('Cluster','Description','qvalue')]
+
+mat <- pivot_wider(df_subset, names_from = Description,  values_from = qvalue)
+mat <- as.data.frame(mat)
+
+mat2 <- mat[,-1]
+rownames(mat2) <- mat[,1]
+mat2 <- log10(mat2)
+mat2[is.na(mat2)] <- 0
+
+mat_down <- mat2[9:16,]
+mat_down <- mat_down * -1
+mat_up <- mat2[1:8,]
+
+rownames(mat_up) <- c(
+    'PSC',
+    'PSC-like',
+    'meso-like-1',
+    'meso-like-2',
+    'mesodermal',
+    'early-epi',
+    'iLSCs',
+    'iLSCs-diff'
+  )
+rownames(mat_down) <- c(
+    'PSC',
+    'PSC-like',
+    'meso-like-1',
+    'meso-like-2',
+    'mesodermal',
+    'early-epi',
+    'iLSCs',
+    'iLSCs-diff'
+  )
+
+mat_down[abs(mat_up) > abs(mat_down)] <- 
+  mat_up[abs(mat_up) > abs(mat_down)]
+
+
+df_subset <- df[df$ID %in% selected_IDs,]
+df_subset <- df_subset[c('Cluster','Description','GeneRatio')]
+
+df_subset$GeneRatio <- unlist(lapply(df_subset$GeneRatio, function(x) eval(parse(text = x))))
+
+ratio_mat <- pivot_wider(df_subset, names_from = Description,  values_from = GeneRatio)
+ratio_mat <- as.data.frame(ratio_mat)
+ratio_mat[is.na(ratio_mat)] <- 0
+ratio_mat2 <- ratio_mat[,-1]
+rownames(ratio_mat2) <- ratio_mat[,1]
+
+ratio_down <- ratio_mat2[9:16,]
+ratio_up <- ratio_mat2[1:8,]
+
+ratio_down[ratio_up > ratio_down] <- 
+  ratio_up[ratio_up > mat_down]
+
+ratio_down[ratio_down == 0] <- NA
+
+nm = rownames(t(mat_down))
+col_fun = circlize::colorRamp2(c(-20, 0, 20), c("blue", "white", "red"))
+dot_increase <- 0.1
+
+ht <- ComplexHeatmap::Heatmap(
+  t(mat_down),
+  name = 'log10 pvalue',
+  cluster_columns = F,
+  cluster_rows = T,
+  row_km = 5,
+  row_km_repeats = 1000,
+  rect_gp = gpar(type = 'none'),
+  border = FALSE,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.circle(
+      x = x,
+      y = y,
+      r = abs((t(ratio_down)[i,j]* 4 + 0.3) * min(unit.c(width,height))),
+      gp = gpar(fill = col_fun(t(mat_down)[i, j]), col = NA)
+    )
+  }
+)
+
+max(abs(t(ratio_down)), na.rm=T)
+
+min <- round(min(t(ratio_down), na.rm=T),2)
+middle <- round(mean(t(ratio_down), na.rm=T),2) 
+upper_val <- round(max(t(ratio_down), na.rm=T),2)
+
+lgd <- list(Legend(
+  title = 'GeneRatio',
+  labels = c(min),
+  type = "points",
+  size = unit((min*4 + 0.3), 'npc')),
+  Legend(
+  title = 'GeneRatio',
+  labels = c(middle),
+  type = "points",
+  size = unit((middle* 4 + 0.3), 'npc') 
+),Legend(
+  title = 'GeneRatio',
+  labels = c(upper_val),
+  type = "points",
+  size = unit((upper_val* 4 + 0.3), 'npc')
+))
+
+pdf(
+  paste0(resultsdir, '/10.GO-map.pdf') ,
+  width = 8,
+  height = 10,
+  paper = 'special'
+)
+draw(ht, heatmap_legend_list = lgd)
+dev.off()
+draw(ht, heatmap_legend_list = lgd)
+```
+Generate some additional figures to highlight the trends in the gene patterns
+
+#epidermis development
+```{r}
+go_df <- as.data.frame(formula_res)
+epidev_df <- go_df[go_df$Description =='epidermis development',]
+
+epidermis_dev_genes <- unlist(lapply(epidev_df$geneID, function(x) str_split(x,'/')))
+```
+
+Heatmap cluster marking genes:
+```{r}
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+heatmap.markers <- cluster_DEGS
+cluster_DEGS$log2FC <- cluster_DEGS$avg_logFC 
+cluster_DEGS <- cluster_DEGS[cluster_DEGS$avg_log2FC > 0.5,]
+table(cluster_DEGS$cluster)
+n_genes <- 1000
+heatmap.markers <- cluster_DEGS %>% group_by(cluster) %>% top_n(n_genes, avg_log2FC)
+
+
+mat <- as.data.frame(seu@assays$sf@scale.data[heatmap.markers$gene,])
+mat <- mat[,order(seu$seurat_clusters)]
+ha = HeatmapAnnotation(cluster = as.character(seu$seurat_clusters[order(seu$seurat_clusters)], replace = TRUE))#,
+    #col = list(bar = c("a" = "red", "b" = "green", "c" = "blue")))
+breaks <- as.character(seu$seurat_clusters[order(seu$seurat_clusters)])
+mat <- scale(mat)
+
+
+clust_heatmap <- grid.grabExpr(draw(Heatmap(mat, 
+                                            column_split = breaks,
+                                            row_split = heatmap.markers$cluster, 
+                                            cluster_columns = F, 
+                                            cluster_rows = F,
+                                            show_row_names = F,
+                                            show_column_names = F,
+                                            #row_names_gp = gpar(fontsize = 6), 
+                                            top_annotation = ha, 
+                                            row_names_rot = -40, 
+                                            #col = col_fun,
+                                            use_raster = T,
+                                            raster_quality = 5)))
+
+pdf(paste0(resultsdir,'/10.Complex_heatmap.pdf') ,width=6,height=6,paper='special') 
+plot_grid(clust_heatmap)
+dev.off()
+```
+
+
+#lets export the propper differentiating iLSCs to a seurat object to combine with adult LSCs for that comparison
+```{r}
+rds_file <- paste0(workdir,'seu_iLSC.rds')
+Idents(object = seu) <- "seurat_clusters"
+seu_iLSCs <- subset(x = seu, idents = "iLSCs")
+saveRDS(seu_iLSCs, file = rds_file)
+rds_file <- paste0(workdir,'differentiation_object.rds')
+saveRDS(seu, file = rds_file)
+```
+
+#lets use scATAC data to annotate the scATAC SNAP object using the scRNAseq data
+```{r}
+#load scRNAseq object
+rds_file <- paste0(workdir,'differentiation_object.rds')
+seu <- readRDS(rds_file)
+variable.genes <- unlist(read.table("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/analysis_diff_2023/variable_genes.tsv"))
+
+#load the scATAC object
+seu_ATAC <- readRDS("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scATACseq_iPSC_iLSCs/analysis_V2/Snap_seurat.Rds")
+
+seu_ATAC@assays$ACTIVITY
+```
+
+#transfer anchors them datasets
+```{r}
+transfer.anchors <- FindTransferAnchors(
+  reference = seu,
+  query = seu_ATAC,
+  features = cluster_DEGS$gene,
+  reference.assay = "sf",
+  query.assay = "ACTIVITY",
+  reduction = "cca"
+)
+```
+
+```{r}
+celltype.predictions <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = seu$seurat_clusters,
+  weight.reduction = seu_ATAC[["SnapATAC"]],
+  dims = 1:25
+)
+saveRDS(celltype.predictions,file=paste0(workdir,'predicted_labels_scATAC.rds'))
+```
+
+### lets generate CPM values & DEGS for scANANSE
+```{r}
+#seu$seurat_clusters <- mapply(gsub, pattern="_", x=seu$seurat_clusters, replacement='-')
+devtools::load_all("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/AnanseSeurat")
+ananse_dir <- '/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scANANSE_iPSC_iLSCs_2023/'
+system(paste("mkdir -p ", ananse_dir))
+
+
+export_CPM_scANANSE(
+  seu,
+  min_cells= 25,
+  output_dir= ananse_dir,
+  cluster_id= 'seurat_clusters',
+  RNA_count_assay = 'sf'
+)
+
+config_scANANSE(seu,
+                min_cells = 25,
+                output_dir = ananse_dir,
+                cluster_id = 'seurat_clusters')
+
+DEGS_scANANSE(seu,
+              min_cells = 25,
+              RNA_count_assay = 'sf',
+              output_dir = ananse_dir,
+              cluster_id = 'seurat_clusters')
+```
+
+save shiny object:
+#save shiny object
+```{r}
+sce_shiny <- as.SingleCellExperiment(seu)
+saveRDS(sce_shiny,paste0(resultsdir,'/differentiation_object.rds'))
+```
+
+```{r}
+rds_file <- paste0(workdir,'differentiation_object.rds')
+seu <- readRDS(rds_file)
+Idents(seu) <- "seurat_clusters"
+levels(x = seu@active.ident) <- c('PSC','PSC-like','meso-like-1','meso-like-2','mesodermal','early-epi','iLSCs','iLSCs-diff')
+seu$seurat_clusters <- seu@active.ident
+```
+
+#scANANSE
+```{r}
+seu <- import_seurat_scANANSE(
+  seu,
+  cluster_id = 'seurat_clusters',
+  anansnake_inf_dir = "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scANANSE_iPSC_iLSCs_2023/influence"
+)
+
+# export the data per cluster from the single-cell object
+TF_influence <- per_cluster_df(seu,
+  assay = 'influence',
+  cluster_id = 'seurat_clusters')
+
+TF_influence$TF <- rownames(TF_influence)
+TF_long <- reshape2::melt(TF_influence, id.vars = 'TF')
+colnames(TF_long) <- c('TF','cluster', 'influence')
+TF_influence$TF <- NULL
+TF_long <- TF_long[order(TF_long$influence, decreasing = TRUE), ]
+
+# get the top n TFs per cluster
+topTF <- Reduce(rbind,                            	 
+  by(TF_long,
+    TF_long["cluster"],
+    head,
+    n = 12))# Top N highest TFs by cluster
+
+top_TFs <- unique(topTF$TF)
+
+TF_table <- topTF %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::mutate('TopTFs' = paste0(TF, collapse = " "))
+
+unique(TF_table[,c('cluster','TopTFs')])
+
+```
+
+```{r}
+col_fun = circlize::colorRamp2(c(0, 1), c("white", "orange"))
+mat <- as.matrix(TF_influence[rownames(TF_influence) %in% top_TFs,])
+
+#pdf('./scANANSE/analysis/ANANSE_Heatmap.pdf',width=16,height=8,paper='special')
+ComplexHeatmap::Heatmap(mat, col = col_fun)
+#dev.off()
+
+
+```
+
+
+Lets import the gimme maelstrom results:
+```{r}
+highlight_TF1 <- c('NANOG','TFAP2A','TFAP2C','HAND1','NR2F1','ZEB2','GATA4','FOSL2','TP63','EHF','ELF3','KLF4')
+
+
+Annotated_plot <- DimPlot(seu, 
+  label = T, 
+  repel = TRUE, 
+  reduction = "umap")+ NoLegend()
+
+DefaultAssay(object = seu) <- "sf"
+plot_expression <- FeaturePlot(seu, 
+  features = highlight_TF1, 
+  ncol = 1)
+
+DefaultAssay(object = seu) <- "influence"
+plot_ANANSE <- FeaturePlot(seu,
+  ncol = 1,
+  features = highlight_TF1, 
+  cols = c("darkgrey", "#fc8d59"))
+
+pdf(paste0(workdir,'/ANANSE_highlight.pdf'),width=10,height=40,paper='special')
+print(plot_expression|plot_ANANSE)
+dev.off()
+
+```
+
+
+```{r}
+seu <- Maelstrom_Motif2TF(seu,
+                         cluster_id = 'seurat_clusters',
+                         maelstrom_dir = '/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scATACseq_iPSC_iLSCs/analysis_V2/maelstrom/',
+                         RNA_expression_assay = "sf",
+                         output_dir ='/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scATACseq_iPSC_iLSCs/analysis_V2/maelstrom/',
+                         expr_tresh = 5,
+                         cor_tresh = 0.0,
+                         combine_motifs = 'max_cor'
+                         )
+
+act_t <- per_cluster_df(seu, assay = 'MotifTFcor', cluster_id = 'seurat_clusters')
+negcor_TFs <- per_cluster_df(seu, assay = 'MotifTFanticor', cluster_id = 'seurat_clusters')
+top_pTFs <- head(seu@assays[["MotifTFcor"]][[]],15)
+top_nTFs <- head(seu@assays[["MotifTFanticor"]][[]],15)
+
+cluster_order <- c('PSC','PSC-like',"meso-like-1","meso-like-2","mesodermal","early-epi","iLSCs","iLSCs-diff")
+```
+
+```{r}
+col_fun <- circlize::colorRamp2(c(-5,0,5), c('#998ec3','white','#f1a340'))
+col_fun_cor <- circlize::colorRamp2(c(-1,0,1), c('#7b3294','#f7f7f7','#008837'))
+
+pdf(paste0(resultsdir,'/motif_cor.pdf'),width=8,height=15,paper='special') 
+
+for (regtype in c('MotifTFcor','MotifTFanticor')){
+  top_TFs <- head(seu@assays[[regtype]][[]],40)
+  mat <- per_cluster_df(seu, assay = regtype, cluster_id = 'seurat_clusters')
+  mat <- mat[rownames(mat) %in% rownames(top_TFs),]
+
+  #get TF expression matrix
+  exp_mat <- AverageExpression(seu,assay='sf',slot = 'data', features = rownames(top_TFs), group.by = 'seurat_clusters')[[1]]
+  exp_mat <- exp_mat[,colnames(exp_mat)]
+  exp_mat <-  t(scale(t(exp_mat)))
+  #get correlation score
+  row_ha = rowAnnotation(correlation = top_TFs$cor, col = list(correlation = col_fun_cor))
+  print(Heatmap(exp_mat[,cluster_order], cluster_columns = F) + Heatmap(mat[,cluster_order], col = col_fun, cluster_columns = F, right_annotation = row_ha))
+  }
+
+dev.off()
+```
+
+
+
+Lets import the scANANE results
+```{r}
+source("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/AnanseSeurat/R/ANANSE_seurat_wrapper.R")
+seu <- import_seurat_scANANSE(seu,
+                        cluster_id = 'seurat_clusters',
+                        anansnake_inf_dir= "/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scANANSE_iPSC_iLSCs_v2/influence/")
+
+# export the data per cluster from the single-cell object
+TF_influence <- per_cluster_df(seu,
+                             	assay = 'influence',
+                             	cluster_id = 'seurat_clusters')
+head(TF_influence)
+```
+
+get top 5 highest TFs
+```{r}
+TF_influence$TF <- rownames(TF_influence)
+TF_long <- reshape2::melt(TF_influence, id.vars = 'TF')
+TF_influence$TF <- NULL
+colnames(TF_long) <- c('TF','cluster', 'influence')
+TF_long <- TF_long[order(TF_long$influence, decreasing = TRUE), ]
+
+#get the top n TFs per cluster
+topTF <- Reduce(rbind,                                 
+                    by(TF_long,
+                       TF_long["cluster"],
+                       head,
+                       n = 10))# Top N highest TFs by cluster
+
+top_TFs <- unique(topTF$TF)
+  
+TF_table <- topTF %>% 
+  dplyr::group_by(cluster) %>% 
+  dplyr::mutate('TopTFs' = paste0(TF, collapse = " ")) 
+
+unique(TF_table[,c('cluster','TopTFs')])
+```
+
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+col_fun = colorRamp2(c(0, 1), c("white", "orange"))
+mat <- TF_influence[rownames(TF_influence) %in% top_TFs,]
+mat_expr <- AverageExpression(seu, assay = 'sf', features = top_TFs, group.by = 'seurat_clusters')[[1]]
+mat_expr <- t(scale(t(mat_expr)))
+mat_expr<- mat_expr[rownames(mat),]
+
+pdf('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scANANSE_iPSC_iLSCs_v2/ANANSE_Heatmap.pdf',width=16,height=12,paper='special')
+Heatmap(mat_expr[,cluster_order], cluster_columns = F, row_km = 6, row_km_repeats = 100 ) + Heatmap(mat[,cluster_order], col = col_fun, cluster_columns = F)
+Heatmap(mat[,cluster_order], cluster_columns = F, col = col_fun, row_km = 8, row_km_repeats = 100 ) + Heatmap(mat_expr[,cluster_order], cluster_columns = F)
+
+dev.off()
+```
+
+```{r}
+TFAP2 <- c('TFAP2A','TFAP2B','TFAP2C')
+pluri <- c('POU5F1','NANOG','SOX2')
+hox <- c('HOXA10','HOXB2','TBX3')
+meso2 <- c('ZEB1','PITX2','FOXC1')
+meso <- c('HAND1','SMAD3','FOXO1')
+earlyepi <- c("TFAP2C","ELF3","GATA3")
+ilsc <- c('TP63','FOSL2','EHF')
+highlight_TF1 <- c('GRHL2','KLF4','ELF3')
+
+
+pdf('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scANANSE_iPSC_iLSCs_v2/ANANSE_iLSCsdiff.pdf',width=10,height=(2.5*length(highlight_TF1)),paper='special') 
+DefaultAssay(object = seu) <- "sf"
+plot_expression1 <- FeaturePlot(seu, features = highlight_TF1, ncol = 1)
+DefaultAssay(object = seu) <- "influence"
+plot_ANANSE1 <- FeaturePlot(seu,ncol = 1, features = highlight_TF1, cols = c("darkgrey", "#fc8d59"))
+#print(DimPlot(seu, label = T, repel = TRUE, reduction = "umap")+ NoLegend())
+print(plot_expression1|plot_ANANSE1)
+dev.off()
+```
+
+
+

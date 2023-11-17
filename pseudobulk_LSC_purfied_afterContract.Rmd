@@ -1,0 +1,230 @@
+---
+title: "RNAseq_Epithelial_fate_KC_LSC"
+author: "Jsmits"
+date: "March, 2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+Conda environment used: 'bulk_rna_seq'
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=7, fig.height=7) 
+```
+
+```{r load_libraries message=FALSE, warning=FALSE}
+#Sys.unsetenv("GITHUB_PAT")
+#devtools::install_github("JGASmits/deSeq2science")
+#install.packages('doMC')
+library("DESeq2")
+library('devtools')
+#library('EnhancedVolcano')
+library('ComplexHeatmap')
+library('cowplot')
+library('clusterProfiler')
+library('tidyverse')
+#BiocManager::install("clusterProfiler ", force = TRUE)#update none
+
+setwd("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/")
+devtools::load_all('deseq2science')
+```
+
+```{r}
+figure_dir <- generate_output_dir('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/iLSC_LSC_comp/combined')
+counts <- read.table('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/scRNAseq_iPSC_iLSCs/analysis_diff_2023/20230125/pseudobulk_table.tsv')
+sample_file <- read.table('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/iLSC_LSC_comp/pseudobulk_samples.tsv', header = T)
+chrXY <- read.csv("/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/tools/chrXY.txt")
+
+counts <- merge(counts,LSC_counts, by = 'row.names')
+rownames(counts) <- counts$Row.names
+counts$Row.names <- NULL
+#counts
+
+```
+
+#lets add the regular bulk FACs selected cells:
+```{r}
+counts_bulk <- read.table('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/iLSC_LSC_comp/results_hugo/counts/GRCh38.p13-counts_old.tsv', header = T)
+Ensemble2Hugo <- read.table('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/genomepy_genomes/GRCh38.p13/gene_id2name.tsv', header= F)
+colnames(Ensemble2Hugo) <- c('gene', 'hugo_gene')
+counts_bulk <- merge(counts_bulk,Ensemble2Hugo, by = 'gene' )
+counts_bulk$gene <- NULL
+counts_bulk <- counts_bulk[!duplicated(counts_bulk$hugo_gene),]
+rownames(counts_bulk) <- counts_bulk$hugo_gene
+counts_bulk$hugo_gene <- NULL
+
+sample_file_bulk <- read.table('/ceph/rimlsfnwi/data/moldevbio/zhou/jsmits/iLSC_LSC_comp/results_hugo/log/samples.tsv', header = T)
+sample_file_bulk$sample <- sample_file_bulk$descriptive_name
+sample_file_bulk <- sample_file_bulk[colnames(sample_file)]
+```
+
+#lets merge the data
+```{r}
+sample_file$seqtype <- 'single_cell'
+sample_file_bulk$seqtype <- 'bulk'
+
+counts_all <- merge(counts, counts_bulk, by = 'row.names')
+rownames(counts_all) <- counts_all$Row.names
+counts_all$Row.names <- NULL
+counts_all$hugo_gene <- NULL
+counts_all <- counts_all[!rownames(counts_all) %in% chrXY$Gene.name,]
+
+sample_all <- rbind(sample_file, sample_file_bulk)
+```
+
+lets run deseq2 and PCA analysis on the pseudobulk
+```{r}
+sample_sub <- sample_all[sample_all$seqtype != 'bulk',]
+counts_sub <- counts_all[,colnames(counts_all) %in% sample_sub$sample]
+sample_sub <- sample_sub[sample_sub$sample %in% colnames(counts_sub),]
+sample_all$sample %in% colnames(counts_sub)
+colnames(counts_sub) %in% sample_all$sample
+
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts_sub,#counts_all
+                          #generate deseq object, the samples and designs are specified in deseq_objects_df
+                          colData =sample_sub,#sample_all
+                          design = as.formula( ~ type))
+keep <- rowSums(DESeq2::counts(dds)) >= 10
+dds <- dds[keep,]
+
+#set all as the baseline
+dds[['type']] <- relevel(dds[['type']],'iLSC')
+dds <- DESeq(dds)
+#make a list of all genes measured with more than 10 counts to use as a background.
+gene_background_list <- rownames(DESeq2::counts(dds)[rowSums(DESeq2::counts(dds)) > 10,])
+rlog <- DESeq2::rlog(dds) #normalize deseq2 intensities
+
+plot_dist_dds(rlog,paste0(figure_dir,"/distance.pdf"),"cell_line","type")
+ammount_of_sig_PCs <- plotPCA_dds(rlog,
+                     intgroup = c('cell_line','type'),
+                     output_dir =figure_dir,
+                     filename= 'PCA_',
+                     run_go_enrichment = T,
+                     Genenames_keyType = 'SYMBOL',
+                     n_PCA_top_genes = 15,
+                     #ntop = 500,
+                     PC_cutoff = 10,
+                     gene_background = NA)
+```
+
+Rerun deseq with all cells
+```{r}
+counts_all <- counts_all[,colnames(counts_all) %in% sample_all$sample]
+sample_all <- sample_all[sample_all$sample %in% colnames(counts_all),]
+sample_all$sample %in% colnames(counts_all)
+colnames(counts_all) %in% sample_all$sample
+
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts_all,#counts_all
+                          #generate deseq object, the samples and designs are specified in deseq_objects_df
+                          colData =sample_all,#sample_all
+                          design = as.formula( ~seqtype + type))
+keep <- rowSums(DESeq2::counts(dds)) >= 10
+dds <- dds[keep,]
+
+#set all as the baseline
+dds[['type']] <- relevel(dds[['type']],'iLSC')
+dds <- DESeq(dds)
+#make a list of all genes measured with more than 10 counts to use as a background.
+gene_background_list <- rownames(DESeq2::counts(dds)[rowSums(DESeq2::counts(dds)) > 10,])
+rlog <- DESeq2::rlog(dds) #normalize deseq2 intensities
+```
+
+
+
+#Lets plot marker gene expression
+```{r}
+#highlight_genes <- c('MT1G','MT1H','NANOG')
+highlight_genes <-
+  c('AREG',
+    'ITGA6',
+    'KRT14',
+    'MT1G',
+    'TP63',
+    'ZEB2',
+    'NANOG',
+    'HAND1')
+
+
+tcounts <-
+  t(log2((
+    counts(dds[highlight_genes, ], normalized = T, replaced = FALSE) + 0.5
+  ))) %>%
+  merge(colData(dds), ., by = "row.names") %>%
+  tidyr::gather(gene, expression, (ncol(.) - length(highlight_genes) + 1):ncol(.))
+
+tcounts$newtype <- as.character(tcounts$type)
+tcounts[which(tcounts$seqtype == 'bulk' &
+                tcounts$type == 'iLSC'), ]$newtype  <- 'FACS selection'
+tcounts[which(tcounts$seqtype == 'bulk' &
+                tcounts$type == 'all'), ]$newtype  <- 'nonselected'
+tcounts <- tcounts[!tcounts$newtype == 'nonselected', ]
+tcounts[which(tcounts$newtype == 'all'), ]$newtype  <-
+  'pre selection'
+tcounts[which(tcounts$newtype == 'LSC'), ]$newtype  <- 'adult_LSC'
+tcounts[which(tcounts$newtype == 'iLSC'), ]$newtype  <-
+  'in silico selection'
+
+tcounts$newtype <-
+  factor(
+    tcounts$newtype,
+    levels = c(
+      "pre selection",
+      "in silico selection",
+      "FACS selection",
+      "adult_LSC"
+    )
+  )
+
+
+
+tcounts[which(tcounts$cell_line == 'B2HT'), ]$cell_line  <- 'iPSC1'
+tcounts[which(tcounts$cell_line == '003bC'), ]$cell_line  <- 'iPSC2'
+tcounts[which(tcounts$cell_line == 'LSC_KSFM'), ]$cell_line  <-
+  'adult_LSC'
+
+
+tcounts$cell_line <-
+  factor(tcounts$cell_line,
+         levels = c("iPSC1", "iPSC2", "ESC", "adult_LSC"))
+
+
+
+#tcounts$newtype <- paste0(tcounts$newtype,"_", tcounts$cell_line)
+tcounts <- tcounts[tcounts$cell_line != 'iPSC2',]
+
+tcounts$gene <-
+  factor(
+    tcounts$gene,
+    levels = c(
+      "AREG",
+      "ITGA6",
+      "TP63",
+      "KRT14",
+      "MT1G",
+      "HAND1",
+      "NANOG",
+      "ZEB2"
+    ))
+unique(tcounts$gene)
+tcount_plot <-
+  ggplot2::ggplot(tcounts,
+                  ggplot2::aes_string('newtype', 'expression', fill = 'cell_line')) +
+  ggplot2::geom_boxplot() +  #coord_flip() +
+  ggplot2::facet_wrap( ~ gene, scales = "free_y", ncol = 4) + 
+  theme(axis.text.x = element_text(
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1
+  ))
+
+pdf(
+  paste0(figure_dir, '/gene_examples.pdf') ,
+  width = 8,
+  height = 4,
+  paper = 'special'
+)
+print(tcount_plot)
+dev.off()
+
+tcount_plot
+```
