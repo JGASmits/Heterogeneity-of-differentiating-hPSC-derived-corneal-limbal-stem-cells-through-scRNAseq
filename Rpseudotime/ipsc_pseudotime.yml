@@ -1,0 +1,14 @@
+name: JA_R_pseudotime_ipsc
+channels:
+  - r
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - r-base==4.3.* # This is the version currently used
+  - r-seurat==5.0.0
+  - r-r.utils
+  - r-monocle3
+  - r-terra
+  - r-remotes
+  - bioconductor-singlecellexperiment

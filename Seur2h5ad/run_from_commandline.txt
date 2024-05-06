@@ -1,0 +1,4 @@
+# Within a bash terminal (ubuntu 20.04.03 LTS)
+$ conda activate JA_R_seuratdisk
+$ Rscript conv_script.R
+$ Rscript conv_script_raw.R

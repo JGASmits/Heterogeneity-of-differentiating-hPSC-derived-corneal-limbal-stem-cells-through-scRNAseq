@@ -1,0 +1,3 @@
+# Within a bash terminal (ubuntu 20.04.03 LTS)
+$ conda activate JA_R_pseudotime_ipsc
+$ Rscript ipsc_pseudotime.R
