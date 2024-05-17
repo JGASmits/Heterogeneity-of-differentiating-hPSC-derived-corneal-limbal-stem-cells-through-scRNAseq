@@ -1,6 +1,6 @@
 # Heterogeneity-of-differentiating-hPSC-derived-corneal-limbal-stem-cells-through-scRNAseq
 
-code files related to the manuscript: Deciphering the heterogeneity of differentiating hPSC-derived corneal limbal stem cells through single-cell RNA-sequencing
+code files related to the manuscript: Deciphering the heterogeneity of differentiating hPSC-derived corneal limbal stem cells through single-cell RNA-sequencing.
 
 ## For regenerating all the main figures from the manuscript, follow the subsequent steps:
 
@@ -26,4 +26,5 @@ $ Rscript ipsc_pseudotime.R
 3. Run the ipython notebooks within activated environments for PROGENy and SCENIC analyses.
 Follow the steps written in the notebooks of "PySCENIC_PROGENy".
 
-## Individual objects can also be downloaded from Zenodo (to do)
+## Individual objects can also be downloaded from Zenodo
+Constructed single-cell objects can be found here: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.11208468.svg)](https://doi.org/10.5281/zenodo.11208468)
